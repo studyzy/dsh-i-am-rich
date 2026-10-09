@@ -1,5 +1,5 @@
 /**
- * Pure folds turning durable `llm/waste` records into the figures the status
+ * Pure folds turning durable discard records into the figures the status
  * bar shows: today's discarded tokens and the provider usage they came from.
  *
  * Every figure here is arithmetic over provider-reported usage. Nothing is

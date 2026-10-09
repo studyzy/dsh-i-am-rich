@@ -10,13 +10,22 @@
 
 import { describe, expect, it } from 'vitest'
 import { createWasteLedgerProjection } from '../src/projection.ts'
-import type { LlmWasteEventData, WasteId } from '../src/types.ts'
+import { LEGACY_WASTE_RECORD_TYPE, WASTE_RECORD_TYPE, type LlmWasteEventData, type WasteId } from '../src/types.ts'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-/** Build one `llm/waste` session event for the fold. */
-function wasteEvent(day: string, overrides: Partial<LlmWasteEventData> = {}): SessionEvent {
+/**
+ * Build one discard record for the fold.
+ * @param day - local calendar day to stamp.
+ * @param overrides - fields to override on the record.
+ * @param type - record name; defaults to the current `plugin:` name.
+ */
+function wasteEvent(
+  day: string,
+  overrides: Partial<LlmWasteEventData> = {},
+  type: string = WASTE_RECORD_TYPE,
+): SessionEvent {
   return {
-    type: 'llm/waste',
+    type,
     data: {
       wasteId: 'w1' as WasteId,
       provider: 'deepseek',
@@ -112,5 +121,25 @@ describe('wasteLedger projection', () => {
     }))
 
     expect(before).toEqual(snapshot)
+  })
+
+  it('folds records written under the legacy name', () => {
+    // Sessions written before the plugin adopted the `plugin:` namespace hold
+    // `llm/waste` records. They are never written again, but the spend they
+    // recorded is real and must keep showing up after a reload.
+    const state = fold([wasteEvent('2026-01-05', {
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    }, LEGACY_WASTE_RECORD_TYPE)])
+
+    expect(state.days['2026-01-05']).toMatchObject({ pricedCalls: 1, inputTokens: 100 })
+  })
+
+  it('folds legacy and current records into the same day bucket', () => {
+    const state = fold([
+      wasteEvent('2026-01-05', { usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 } }, LEGACY_WASTE_RECORD_TYPE),
+      wasteEvent('2026-01-05', { usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 } }),
+    ])
+
+    expect(state.days['2026-01-05']).toMatchObject({ pricedCalls: 2, inputTokens: 15 })
   })
 })

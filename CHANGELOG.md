@@ -88,6 +88,49 @@ Removed），正文用中文书写，与仓库的提交信息风格保持一致�
 
 ### Fixed
 
+- **写坏整个会话日志：`llm/waste` 是未注册事件，且没有 `ignorable` 标记。**
+  这是「重启 dsh desktop 后某条历史 Session 打不开」的**根因**，报错为
+  `contains event type "llm/waste" (seq 707) unknown to this harness and not
+  marked ignorable; refusing to interpret the log`。原因有两层：
+  1. `declare module '@deepseek-ai/dsh-session/types'` 扩展
+     `SessionEventMap` **只是编译期声明**，它让本包的 TypeScript 认为该事件
+     存在，却**没有**向任何 harness 注册这个名字。harness 读日志时不认识
+     `llm/waste`，又看不到 `ignorable: true`，于是按设计**拒绝解释整份日志**
+     ——拒绝比静默跳过更安全，因为漏读一个事件可能重建出错误的会话。
+  2. harness 的 `Session.append()` 自己构造事件信封
+     （`{type, seq, time, data, ...surfaceMetadata}`），**没有任何途径**写入
+     `ignorable`。也就是说在旧实现下，本插件**无法**写出一个合法的事件。
+  现在改用 harness 官方为「实验性插件记录」提供的
+  `appendPluginRecord(session, type, data)`：它自动打上 `ignorable: true`，
+  并要求事件名符合 `plugin:` 命名空间语法。记录名相应改为
+  **`plugin:i-am-rich/waste`**（`src/types.ts` 的 `WASTE_RECORD_TYPE`）。
+  新增 `src/records.ts` 作为**唯一写入口**：它在运行时探测
+  `appendPluginRecord` 是否存在，**旧 harness 上宁可不记账**，
+  也绝不回退到裸 `Session.append` 写一个未标记的事件——
+  丢一个统计数字可以恢复，丢一整个会话不行。探测结果按插件加载缓存一次，
+  不支持时只告警一次（而不是每次丢弃都刷屏）。
+  `projection` 同时继续折叠旧的 `llm/waste` 记录（`LEGACY_WASTE_RECORD_TYPE`
+  仅用于读取，永不写入），这样已被修复的历史会话仍能如实显示当天浪费。
+  **注意**：`appendPluginRecord` 出现在 `dsh-v0.2.1-alpha.2`，
+  而 desktop app 当前是 `0.2.0-rc.2`（`grep -c appendPluginRecord` 在
+  已安装的 `dsh-session` 中为 **0**）。因此在升级 harness 之前，
+  本插件会告警「不记账」并保持状态条为 0——这是刻意的降级，不是故障。
+
+- **同源问题：`@studyzy/dsh-suggest-prompt` 也在写未标记的未知事件。**
+  修复本插件时发现，`suggest-prompt/request` 与 `suggest-prompt/suggested`
+  同样是**不在 harness 词表内、且没有 `ignorable`** 的事件
+  （该插件 `lib/index.js` 里既没有 `ignorable`，也没有
+  `KNOWN_SESSION_EVENT_TYPES` / `SessionEventMap` / `appendPluginRecord`）。
+  之所以此前只有 `llm/waste` 报错，是因为 `validateStoredEvents`
+  按**顺序**遍历并在**第一个**违规事件上抛出：本会话里 `llm/waste` 出现在
+  seq 707，而 `suggest-prompt/*` 在 seq 1953，所以只报出了前者。
+  验证：只修 `llm/waste` 之后，同一条会话的报错会变成
+  `suggest-prompt/request (seq 1953)`——**问题并没有消失，只是换了个名字**。
+  这两个插件需各自修复；本仓库只负责自己那一个。
+  修复工具 `scripts/repair-session-log.mjs` 因此做成**通用**的：
+  它按 harness 的真实词表判断，而不是只认 `llm/waste`，
+  于是能一次修好两种事件（`scripts/verify-session-log.mjs` 可复核结果）。
+
 - **状态条此前根本没有被挂载：注册的槽位 `shell.bottom` 并不存在。**
   这是「装了但界面上看不到浪费了多少 Token」的**真正根因**。
   `ui-layout` 的 `root` 槽位只声明了 `sidebar`、`main`、`rightbar`、

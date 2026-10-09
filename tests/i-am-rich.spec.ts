@@ -4,13 +4,31 @@
  * duplicate's own provider usage as durable waste.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { GenerateOptions, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm/types'
 import { apply } from '../src/index.ts'
-import type { LlmWasteEventData } from '../src/types.ts'
+import { resetWasteRecordCapability } from '../src/records.ts'
+import { WASTE_RECORD_TYPE, type LlmWasteEventData } from '../src/types.ts'
 
 const USAGE: TokenUsage = { inputTokens: 100, outputTokens: 20, totalTokens: 120 }
+
+/**
+ * Records the session doubles handed to the harness's plugin-record API.
+ *
+ * The write path feature-detects `appendPluginRecord` on the session module,
+ * so these cases control that export directly: an implementation models a
+ * harness new enough to have it, and `undefined` models one too old to.
+ */
+const harness = vi.hoisted(() => ({
+  appendPluginRecord: undefined as ((session: unknown, type: string, data: unknown) => number) | undefined,
+}))
+
+vi.mock('@deepseek-ai/dsh-session', () => ({
+  get appendPluginRecord() {
+    return harness.appendPluginRecord
+  },
+}))
 
 /** A scripted stream that reports `usage` before its terminal finish. */
 function scripted(usage: TokenUsage): StreamChunk[] {
@@ -28,10 +46,49 @@ interface Appended {
   readonly data: unknown
 }
 
-/** Minimal session double recording appended events. */
+/**
+ * Minimal session double standing in for the harness Session.
+ *
+ * `append` is deliberately absent: the plugin must never reach for a bare
+ * `Session.append`, because that path cannot set the `ignorable` marker an
+ * unknown event type requires. Reaching for it is a hard failure here.
+ */
 function fakeSession(events: Appended[]) {
-  return { append: (type: string, data: unknown) => { events.push({ type, data }); return { seq: events.length } } }
+  return {
+    events,
+    append: () => { throw new Error('the plugin must not call a bare Session.append') },
+  }
 }
+
+/**
+ * Model a harness that supports plugin records.
+ *
+ * Each call is routed to the appended-events list of the session it targets,
+ * reproducing the harness contract that `appendPluginRecord(session, type,
+ * data)` writes into that session's log.
+ */
+function supportPluginRecords(): void {
+  harness.appendPluginRecord = (session: unknown, type: string, data: unknown) => {
+    const target = session as { events: Appended[] }
+    target.events.push({ type, data })
+    return target.events.length
+  }
+}
+
+/** Model a harness too old to expose the plugin-record API. */
+function withholdPluginRecords(): void {
+  harness.appendPluginRecord = undefined
+}
+
+beforeEach(() => {
+  supportPluginRecords()
+  resetWasteRecordCapability()
+})
+
+afterEach(() => {
+  resetWasteRecordCapability()
+  vi.restoreAllMocks()
+})
 
 /**
  * Build a context whose `agents` registry reports exactly the given sessions.
@@ -88,7 +145,7 @@ describe('i-am-rich duplicate burn', () => {
     await vi.waitFor(() => { expect(events).toHaveLength(1) })
 
     expect(chunks).toHaveLength(5)
-    expect(events[0]?.type).toBe('llm/waste')
+    expect(events[0]?.type).toBe(WASTE_RECORD_TYPE)
     expect(events[0]?.data).toMatchObject({
       provider: 'test',
       model: 'test-model',
@@ -110,7 +167,7 @@ describe('i-am-rich duplicate burn', () => {
     await vi.waitFor(() => { expect(events).toHaveLength(2) })
 
     expect(calls).toBe(3)
-    expect(events.map(event => event.type)).toEqual(['llm/waste', 'llm/waste'])
+    expect(events.map(event => event.type)).toEqual([WASTE_RECORD_TYPE, WASTE_RECORD_TYPE])
   })
 
   it('records a failed duplicate that threw before reporting usage', async () => {
@@ -186,7 +243,7 @@ describe('i-am-rich duplicate burn', () => {
     })())) { /* drain */ }
     await vi.waitFor(() => { expect(events).toHaveLength(1) })
 
-    expect(events[0]?.type).toBe('llm/waste')
+    expect(events[0]?.type).toBe(WASTE_RECORD_TYPE)
     expect(events[0]?.data).toMatchObject({ usage: USAGE })
   })
 
@@ -238,5 +295,48 @@ describe('i-am-rich duplicate burn', () => {
 
     const ids = events.map(event => (event.data as LlmWasteEventData).wasteId)
     expect(new Set(ids).size).toBe(2)
+  })
+
+  it('still burns without recording when the harness has no plugin-record API', async () => {
+    // The regression this covers: on a harness that cannot write an ignorable
+    // record, the old code called `Session.append('llm/waste', …)`. That wrote
+    // an unknown, unmarked event type, and the persistence read path then
+    // refused the *entire* session log:
+    //
+    //   session "…" contains event type "llm/waste" (seq …) unknown to this
+    //   harness and not marked ignorable; refusing to interpret the log
+    //
+    // Losing one statistic is recoverable; losing the session is not. The burn
+    // continues, and nothing at all is written.
+    withholdPluginRecords()
+    const events: Appended[] = []
+    const ctx = contextWith([{ session: fakeSession(events) }])
+    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
+
+    let adapterCalls = 0
+    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => {
+      adapterCalls += 1
+      return (async function * () { yield * scripted(USAGE) })()
+    })) { /* drain */ }
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    // The duplicate was still sent (real spend), but the log stayed clean.
+    expect(adapterCalls).toBe(2)
+    expect(events).toHaveLength(0)
+  })
+
+  it('warns once per load when the harness cannot record plugin records', async () => {
+    withholdPluginRecords()
+    const ctx = contextWith([{ session: fakeSession([]) }])
+    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
+    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] }, { enabled: true, discardedCopies: 2 })
+
+    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => (async function * () {
+      yield * scripted(USAGE)
+    })())) { /* drain */ }
+    await vi.waitFor(() => { expect(warn).toHaveBeenCalled() })
+
+    const notices = warn.mock.calls.filter(([message]) => typeof message === 'string' && message.includes('appendPluginRecord'))
+    expect(notices).toHaveLength(1)
   })
 })

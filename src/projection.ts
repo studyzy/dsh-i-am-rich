@@ -2,7 +2,7 @@
  * The `wasteLedger` session projection: durable discarded usage bucketed by
  * local calendar day, published to the Web client for the status bar.
  *
- * The projection is a pure fold over `llm/waste` records. The day is stamped
+ * The projection is a pure fold over discard records. The day is stamped
  * into each record when the Host appends it, so the fold and the wire view are
  * both clock-free: replay assigns exactly the day the live append did.
  *
@@ -17,7 +17,7 @@ import { z as zod } from 'zod'
 import type { SessionEvent, SessionHeader, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { addWaste, EMPTY_TOTALS, type WasteTotals } from './waste.ts'
-import type { LlmWasteEventData } from './types.ts'
+import { LEGACY_WASTE_RECORD_TYPE, WASTE_RECORD_TYPE, type LlmWasteEventData } from './types.ts'
 
 /** State of the day-bucketed waste ledger. */
 export interface WasteLedgerState {
@@ -53,7 +53,7 @@ const wasteLedgerViewSchema: zod.ZodType<WasteLedgerView> = zod.object({
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
   interface SessionProjectionStateMap {
-    /** Day-bucketed discarded-usage ledger folded from `llm/waste` records. */
+    /** Day-bucketed discarded-usage ledger folded from discard records. */
     wasteLedger: WasteLedgerState
   }
 
@@ -65,17 +65,28 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 /**
  * Whether an event is a discard record this projection folds.
+ *
+ * Both the current `plugin:` name and the legacy `llm/waste` name are folded,
+ * so a session written by an earlier version of this plugin keeps reporting the
+ * spend it recorded. Only the current name is ever written — see
+ * {@link WASTE_RECORD_TYPE}.
+ *
+ * The event type is widened to `string`: a plugin record is by construction
+ * outside the harness's `SessionEventType` union, so comparing the narrowed
+ * union against these names is a type error even though it is exactly the
+ * runtime comparison the fold needs.
  * @param event - any durable session event.
  * @returns true when the event carries discarded usage.
  */
 function isWaste(event: SessionEvent): event is SessionEvent & { data: LlmWasteEventData } {
-  return event.type === 'llm/waste'
+  const type: string = event.type
+  return type === WASTE_RECORD_TYPE || type === LEGACY_WASTE_RECORD_TYPE
 }
 
 /**
  * The waste-ledger projection definition, registered by the Host plugin.
  *
- * Each `llm/waste` record carries the local calendar day it was appended on, so
+ * Each discard record carries the local calendar day it was appended on, so
  * the fold needs no clock and replay reproduces the live totals exactly.
  * @param key - projection key to register under.
  * @returns the projection definition for `ctx.sessionProjections.register`.

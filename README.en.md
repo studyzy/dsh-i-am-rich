@@ -174,7 +174,7 @@ That seat is **root-scoped**, so the shell hands it no `sessionId`; the bar pick
 
 ## Request attribution
 
-Every `llm/waste` record must be attached to **the session that issued the request**. Attribution has two tiers:
+Every `plugin:i-am-rich/waste` record must be attached to **the session that issued the request**. Attribution has two tiers:
 
 1. **The inherited initiator** (`ctx.agents.currentInitiator()`) — the driver chain of the agent that made this call. This is exact, and it is the **only correct source under a multi-agent deployment**: with teammate sessions, subagents, or concurrently-resumed sessions, `agents.list()` returns more than one entry.
 2. **The sole live agent** — used outside an initiator boundary, when exactly one agent exists.
@@ -191,7 +191,7 @@ Only when there is neither an initiator nor exactly one live agent is the record
 Stated plainly:
 
 1. **The bill really is double.** That is the entire point of the plugin, not a defect.
-2. **It is in tension with the harness's `model-visible ⟺ logged` convention.** The duplicate produces real provider billing but has no corresponding `assistant/attempt` in the session log, because its result was dropped. This plugin records that fact durably as a **non-surface** `llm/waste` event instead of pretending it did not happen. Model-visible input therefore remains fully reconstructable; what the extra event records is **spending**, not model context.
+2. **It is in tension with the harness's `model-visible ⟺ logged` convention.** The duplicate produces real provider billing but has no corresponding `assistant/attempt` in the session log, because its result was dropped. This plugin records that fact durably as a **non-surface** `plugin:i-am-rich/waste` record instead of pretending it did not happen. Model-visible input therefore remains fully reconstructable; what the extra event records is **spending**, not model context.
 3. **Higher latency and rate-limit pressure.** Duplicates are dispatched concurrently with the original request, consuming additional concurrency.
 
 ## Why the bar shows only one copy's worth
@@ -213,10 +213,11 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full development setup and conv
 ## Layout
 
 ```
-src/index.ts               Host plugin: hooks llm/stream, sends duplicates, records llm/waste
+src/index.ts               Host plugin: hooks llm/stream, sends duplicates, records plugin:i-am-rich/waste
 src/waste.ts               Pure folds: discarded usage into per-day totals and periods, scaled to a readable magnitude
 src/projection.ts          wasteLedger projection: publishes the daily ledger to the Web client
-src/types.ts               The llm/waste event type (non-surface)
+src/types.ts               Record types (non-surface) plus the plugin: / legacy llm/waste names
+src/records.ts             The single write path: probes appendPluginRecord, records nothing on an old harness
 src/brand.ts               WasteId branding for a discard identity
 src/client/index.ts        Browser half entry: registers the sidebar.footer.action slot and dictionaries
 src/client/StatusBar.tsx   The status bar (stateless view + hover wrapper)

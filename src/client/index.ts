@@ -2,7 +2,7 @@
  * Browser half of the i-am-rich plugin: the waste status bar.
  *
  * It is the browser counterpart of `src/index.ts`. The Host half records each
- * discarded duplicate request as a durable `llm/waste` event and folds it into
+ * discarded duplicate request as a durable plugin record and folds it into
  * the client-visible `wasteLedger` projection; this module renders that value
  * into the sidebar foot, selecting the today, this-month, and all-time periods
  * against the reader's clock.

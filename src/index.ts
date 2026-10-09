@@ -1,7 +1,7 @@
 /**
  * Rich-person plugin: sends every model request twice and throws the second
  * copy away, then burns the discarded copy's provider usage into a durable
- * `llm/waste` record that the Web status bar reports as today's waste.
+ * plugin record that the Web status bar reports as today's waste.
  *
  * The duplicate is dispatched through the same `llm/stream` waterfall
  * continuation as the original, so it is a real, fully billed provider call.
@@ -20,10 +20,13 @@ import type { GenerateOptions, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { WasteId } from './brand.ts'
 import { createWasteLedgerProjection } from './projection.ts'
+import { appendWasteRecord, canAppendWasteRecord } from './records.ts'
 import { localDay } from './waste.ts'
 import type { LlmWasteEventData, WasteOutcome } from './types.ts'
 
 export type { LlmWasteEventData, WasteOutcome } from './types.ts'
+export { LEGACY_WASTE_RECORD_TYPE, WASTE_RECORD_TYPE } from './types.ts'
+export { appendWasteRecord, canAppendWasteRecord, resetWasteRecordCapability, type WasteRecordSink } from './records.ts'
 // `WasteId` is one name carrying both a type and a constructor.
 export { WasteId } from './brand.ts'
 export { addWaste, EMPTY_TOTALS, localDay, localMonth, sumPeriods, toMagnitude, totalTokens, type Magnitude, type MagnitudeUnit, type WastePeriods, type WasteTotals } from './waste.ts'
@@ -106,7 +109,14 @@ async function burn(stream: AsyncIterable<StreamChunk>): Promise<{ outcome: Wast
  *
  * Each intercepted call delegates once for the real request and once per
  * discarded copy, whose chunks are thrown away. Every discard is recorded as a
- * durable `llm/waste` event so the amount burned survives reload and replay.
+ * durable plugin record so the amount burned survives reload and replay.
+ *
+ * The record is written only through {@link appendWasteRecord}, which stamps
+ * the `ignorable` marker the persistence read path requires of an event type
+ * outside `SessionEventMap`. On a harness too old to expose that API the
+ * discard is performed but left unrecorded, with one warning per session:
+ * writing an unmarked unknown type would make the whole session log
+ * unreadable, which is far worse than a missing statistic.
  * @param ctx - plugin context owning the waterfall listener.
  * @param config - resolved burn configuration.
  * @param internals - non-serializable deterministic hooks for tests.
@@ -121,6 +131,18 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
 
   if (!config.enabled) return
 
+  // Probed once, at apply time, so the unsupported-harness warning is emitted
+  // at most once per plugin load instead of once per discarded request.
+  let warnedUnsupported = false
+  void canAppendWasteRecord().then((supported) => {
+    if (supported) return
+    warnedUnsupported = true
+    ctx.logger.warn(
+      'i-am-rich: this harness has no appendPluginRecord, so discarded requests are not recorded '
+      + '(requires dsh >= 0.2.1-alpha.2). Burning continues; the waste status bar will stay at zero.',
+    )
+  })
+
   ctx.on('llm/stream', (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>) => {
     const original = next()
     // Resolved synchronously, at request time: the session that owns this
@@ -134,6 +156,7 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
       // original, exactly as several billed requests would be.
       void burn(next()).then((result) => {
         if (owner === undefined) return
+        if (warnedUnsupported) return
         const data: LlmWasteEventData = {
           wasteId: WasteId(newId()),
           provider: options.provider,
@@ -142,7 +165,7 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
           day: localDay(now()),
           ...result.usage === undefined ? {} : { usage: result.usage },
         }
-        owner.append('llm/waste', data)
+        return appendWasteRecord(owner.session, data)
       }, (error: unknown) => {
         ctx.logger.warn('i-am-rich: failed to record a discarded duplicate request: %o', error)
       })
@@ -166,12 +189,12 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
  * left unrecorded, rather than charged to a session that may not have issued
  * it. That case is genuinely ambiguous; a multi-agent deployment is not.
  * @param ctx - plugin context exposing the agent registry.
- * @returns the owning session, or undefined when attribution is truly ambiguous.
+ * @returns the owning agent, or undefined when attribution is truly ambiguous.
  */
-function activeSession(ctx: Context): { append: (type: 'llm/waste', data: LlmWasteEventData) => unknown } | undefined {
+function activeSession(ctx: Context): { session: unknown } | undefined {
   const initiator = ctx.agents.currentInitiator()
-  if (initiator !== undefined) return initiator.session
+  if (initiator !== undefined) return initiator
   const agents = ctx.agents.list()
   if (agents.length !== 1) return undefined
-  return agents[0]?.session
+  return agents[0]
 }

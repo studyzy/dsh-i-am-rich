@@ -171,7 +171,7 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-i-am-rich
 
 ## 请求归属
 
-`llm/waste` 记录必须挂到**发出这次请求的那个 session** 上。归属按两级判定：
+`plugin:i-am-rich/waste` 记录必须挂到**发出这次请求的那个 session** 上。归属按两级判定：
 
 1. **继承的 initiator**（`ctx.agents.currentInitiator()`）——发起这次调用的 agent 的驱动链。这是精确的，也是**多 agent 部署下唯一正确的来源**：有队友 session、子 agent、或并发的会话时，`agents.list()` 会返回不止一个。
 2. **唯一的活跃 agent**——在 initiator 边界之外、且恰好只有一个 agent 时使用。
@@ -188,8 +188,16 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-i-am-rich
 诚实地说清楚这个插件的代价：
 
 1. **账单是真的两倍。** 这是插件的全部意义，不是 bug。
-2. **它和 harness 的 `model-visible ⟺ logged` 约定存在张力。** 重复请求产生了真实的 provider 计费，但它在 session log 里没有对应的 `assistant/attempt`，因为结果是扔掉的。本插件用一条 **non-surface** 的 `llm/waste` 事件把这件事**如实记下来**，而不是假装没发生。因此「模型可见的输入」这一侧仍然完全可重建；被额外记录的是**支出**，不是模型上下文。
+2. **它和 harness 的 `model-visible ⟺ logged` 约定存在张力。** 重复请求产生了真实的 provider 计费，但它在 session log 里没有对应的 `assistant/attempt`，因为结果是扔掉的。本插件用一条 **non-surface** 的 `plugin:i-am-rich/waste` 记录把这件事**如实记下来**，而不是假装没发生。因此「模型可见的输入」这一侧仍然完全可重建；被额外记录的是**支出**，不是模型上下文。
 3. **延迟与速率压力更高。** 重复请求和原请求并发发出，会占用额外的并发额度。
+
+## 版本要求
+
+记账依赖 harness 的 `appendPluginRecord`（它会给记录打上 `ignorable: true`，这是写入「本 harness 不认识的事件类型」的**唯一合法途径**）。该 API 出现在 `dsh-v0.2.1-alpha.2`；在更早的 harness（例如 desktop app 当前使用的 `0.2.0-rc.2`）上，插件会**照常发重复请求，但不写任何记录**，并告警一次：
+
+> i-am-rich: this harness has no appendPluginRecord, so discarded requests are not recorded
+
+状态条因此会一直是 `0`。这是**刻意的降级**：旧实现用裸 `Session.append` 写未标记的 `llm/waste`，结果是 harness 拒绝解释**整份会话日志**，会话直接打不开。丢一个统计数字可以恢复，丢一整个会话不行。升级 harness 后无需改配置，记账会自动恢复。
 
 ## 为什么状态条只显示一份
 
@@ -210,10 +218,11 @@ pnpm test
 ## 文件结构
 
 ```
-src/index.ts               Host 插件：挂 llm/stream，发重复请求，记录 llm/waste
+src/index.ts               Host 插件：挂 llm/stream，发重复请求，记录 plugin:i-am-rich/waste
 src/waste.ts               纯函数：把丢弃用量折叠成每天的总数与三个口径，并把数值缩放到亿/万
 src/projection.ts          wasteLedger 投影：把每天的账本发布给 Web 客户端
-src/types.ts               llm/waste 事件类型（non-surface）
+src/types.ts               记录类型定义（non-surface）与 plugin: / 旧 llm/waste 两个名字
+src/records.ts             唯一写入口：探测 appendPluginRecord，旧 harness 上宁可不记账
 src/brand.ts               WasteId 名义化包装
 src/client/index.ts        浏览器半边入口：注册 sidebar.footer.action 槽位与字典
 src/client/StatusBar.tsx   状态条组件（无状态视图 + 悬停展开包装）
