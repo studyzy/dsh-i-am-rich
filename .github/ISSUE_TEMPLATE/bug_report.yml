@@ -1,0 +1,145 @@
+name: Bug 报告
+description: 报告一个可复现的问题（请注意：账单翻倍是预期行为，不是 bug）
+title: '[Bug] '
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ⚠️ 先读这一条
+
+        本插件的核心机制就是**真的把同一个请求发两遍**：两份都会到达 provider，两份都会计费。
+
+        所以只要你配置了 `enabled: true`（默认值），**账单翻倍是设计出来的预期行为，不是 bug**。
+        同理，状态条上不断增长的「浪费」数字也是预期行为——这个插件唯一的产出就是如实地把它显示出来。
+
+        提交 bug 之前，请先确认：你要报告的问题**不是**「请求发了两次」或「花费变多了」本身，
+        而是某个**除此之外**的异常（报错、崩溃、统计口径不对、状态条不显示、数字算错等）。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 尽量具体：完整的报错信息、堆栈、状态条的异常表现，或统计数字与你的预期差在哪里。
+      placeholder: 例如：状态条显示今日浪费 0，但 provider 后台确实多了调用记录。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望发生什么
+      description: 描述你认为正确的行为。如果是统计口径问题，请写清楚你认为正确的数字是怎么算出来的。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从零开始的最小复现路径，越短越好。
+      placeholder: |
+        1. 在 profile 中插入插件并设置 enabled: true
+        2. 发送一条消息
+        3. 观察状态条 / 日志……
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 正在使用的 cordis.patch.yml 配置
+      description: 粘贴你实际生效的那段配置，务必包含 `enabled` 与 `discardedCopies` 的真实取值（请隐去密钥）。
+      render: yaml
+      placeholder: |
+        - id: i-am-rich
+          name: '@deepseek-ai/dsh-i-am-rich'
+          config:
+            enabled: true
+            discardedCopies: 1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: enabled
+    attributes:
+      label: 出问题时 `enabled` 的值
+      description: 这一项决定了插件当时到底有没有真的重复发送请求。
+      options:
+        - 'true — 插件正在重复发送请求'
+        - 'false — 插件已加载但重复发送已关闭'
+        - 未显式设置（使用默认值 true）
+        - 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: duplicate-sent
+    attributes:
+      label: 重复请求是否真的发出了
+      description: |
+        这是定位问题的关键：插件挂在 `llm/stream` 上，通过同一个 waterfall 续体派发第二份请求。
+        如果第二份根本没发出去，问题在插件里；如果发出去了，那多半是预期行为。
+        不确定的话可以先回答「不确定」。
+      options:
+        - 是 — 确实多了一次 provider 调用（账单/用量可见）
+        - 否 — 没有看到任何重复发送的迹象
+        - 不确定 — 没有检查 provider 侧的调用记录
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本
+      description: '`@deepseek-ai/dsh-i-am-rich` 的版本号（见 package.json 或 lockfile）。'
+      placeholder: 0.0.1
+    validations:
+      required: true
+
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH 版本
+      description: DeepSeek Harness 的版本号。
+      placeholder: 例如 0.2.0-rc.2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: 安装方式
+      options:
+        - npm（npm install @deepseek-ai/dsh-i-am-rich）
+        - '本地 link / 工作区（file: 或 workspace:）'
+        - 直接合入 cordis.patch.yml
+        - 其他（请在补充说明里写清）
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: 例如 macOS 15.2 / Ubuntu 24.04 / Windows 11
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js 版本
+      description: '插件声明的 engines 为 `^22.19.0 || >=24.0.0`，低于该范围不在支持之列。'
+      placeholder: 例如 v22.19.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充说明
+      description: 日志片段、截图、provider 用量截图，或任何其他有助于定位的线索。
+    validations:
+      required: false

@@ -1,0 +1,31 @@
+# Normalize every text file to LF in the repository and in the working tree.
+* text=auto eol=lf
+
+# Explicitly textual sources (GitHub linguist + diff behaviour).
+*.ts   text
+*.tsx  text
+*.js   text
+*.json text
+*.yml  text
+*.yaml text
+*.md   text
+
+# TypeScript sources drive the language statistics; `lib/` is build output
+# (gitignored) and must not be counted as a separate language.
+*.ts linguist-language=TypeScript
+
+# Binary assets — never diff, never normalize.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.ico  binary
+*.gif  binary
+
+# Lockfiles are generated: keep them out of diffs and out of language stats.
+package-lock.json -diff linguist-generated=true
+pnpm-lock.yaml    -diff linguist-generated=true
+
+# Build output. `lib/` is in .gitignore today, so this only documents intent
+# should a bundle ever be committed.
+lib/** linguist-vendored=true

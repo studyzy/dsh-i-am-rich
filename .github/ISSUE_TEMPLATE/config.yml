@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 提问与讨论 / Questions & Discussions
+    url: https://github.com/studyzy/dsh-i-am-rich/discussions
+    about: 用法疑问、想法交流、展示你的浪费战绩，请到 Discussions。若该入口暂不可用，直接开一个普通 issue 即可。
