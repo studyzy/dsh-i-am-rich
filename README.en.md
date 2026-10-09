@@ -44,7 +44,7 @@ one model request
                      │
                      └─> records the usage the provider reported for it
                               │
-                              └─> status bar: 🪙 Wasted today 120 · Wasted this month 1200 · Wasted all time 8400
+                              └─> sidebar foot (above the user name): 🪙 Wasted today 120 / Wasted this month 1200 / Wasted all time 8400
 ```
 
 Both copies are **real, billed provider requests**. Nothing is simulated or estimated: the second request goes over the network, the provider bills for it, and its content is dropped.
@@ -119,13 +119,31 @@ The boundaries are covered by tests: a month rollover (`2025-12-31` is not part 
 
 ### Display format: a coin, and 万 / 亿
 
-The bar opens with a coin, and every period is abbreviated to a magnitude the reader can take in at a glance, picking the unit that fits the figure:
+The bar opens with a coin, and each period is abbreviated to a magnitude the reader can take in at a glance.
+
+**Only today's period shows by default; hovering expands it into three rows, each with its own coin:**
 
 ```
-🪙 Wasted today 31.11M   Wasted this month 31.11M   Wasted all time 31.11M
+at rest:  🪙 Wasted today 31.11M
+
+hovered:  🪙 Wasted today 31.11M
+          🪙 Wasted this month 31.11M
+          🪙 Wasted all time 31.11M
 ```
 
-**Each label spells out that the figure is waste; a bare "Today" is not enough.** The bar reports **the discarded copy**, not total spend, and `Today 31.11M` reads as consumption — the exact opposite of what this plugin isolates. So all three labels are full phrases: 今日浪费 / 本月浪费 / 累计浪费 in Chinese, `Wasted today` / `Wasted this month` / `Wasted all time` in English. A test asserts the word is present for every period, so it cannot be shortened back.
+Why today alone at rest: the seat is the sidebar foot above the user name, so the available width is the sidebar's **264–420px (280 by default)**, while three labelled periods on **one line** need roughly **330px** — they simply do not fit at the default width. So the resting state gives one period and hands the detail to hover.
+
+**The expansion is three stacked rows, not one row of three columns**, and width is why: one period per row means the panel only needs the width of its longest single row, so it stays inside the sidebar column. Laid out side by side it would have to size to its content (~330px) and hang outside the sidebar. The expanded panel is therefore `flex-direction: column` with `width: 100%`, lifted out of the flow (`position: relative` plus a background and shadow) so it covers the account button below instead of shoving it around on every hover.
+
+**The coin is rendered once per row**, not shared by the panel: three rows with three coins read as three separate figures rather than one wrapped sentence.
+
+**Every row is `flex-wrap: nowrap`**, so a row never breaks internally — three rows stay three rows, never four.
+
+Hover expansion uses React state (`onMouseEnter` / `onMouseLeave`) rather than a CSS `:hover` rule: **how many periods render is a render decision**, and a selector can restyle a node but cannot conjure the month and all-time `span`s. It also matches what the shell's own foot controls (the account menu) do.
+
+The **collapsed** sidebar is 56px, a width limit that hovering cannot relieve, so the rail **always** shows just `🪙 31.11M` (the label goes too); all three exact counts remain in the tooltip. Wide vs rail is readable from `data-i-am-rich-wide`, and resting vs expanded from `data-i-am-rich-expanded`.
+
+**Each label spells out that the figure is waste; a bare "Today" is not enough.** The bar reports **the discarded copy**, not total spend, and `Today 31.11M` reads as consumption — the exact opposite of what this plugin isolates. So all three labels are full phrases: 今日浪费 / 本月浪费 / 累计浪费 in Chinese, `Wasted today` / `Wasted this month` / `Wasted all time` in English. A test asserts the word is present for every period, so it cannot be shortened back. The resting row keeps the full label too — what changes with hover is the number of periods, not the wording. The collapsed rail is the one exception, where even the label does not fit.
 
 | Size | Shown as | Example |
 | --- | --- | --- |
@@ -148,9 +166,11 @@ Chinese does **not** use K/M/B, and English does **not** borrow 万/亿 — each
 
 The status bar **renders from the moment the plugin is mounted**, showing three zeros before anything has been wasted.
 
-This is deliberate. The bar is the plugin's **only** visible evidence that it is mounted at all, and a dock entry that renders nothing is **indistinguishable** from a plugin that failed to load — so if "no records yet" meant "render nothing", there would be no way to tell "mounted correctly" from "never mounted". That is exactly what made an early version look like "installed, but doing nothing". The empty state is marked with `data-i-am-rich-waste="empty"`, and the figures stay `0` rather than being hidden.
+This is deliberate. The bar is the plugin's **only** visible evidence that it is mounted at all, and a sidebar entry that renders nothing is **indistinguishable** from a plugin that failed to load — so if "no records yet" meant "render nothing", there would be no way to tell "mounted correctly" from "never mounted". That is exactly what made an early version look like "installed, but doing nothing". The empty state is marked with `data-i-am-rich-waste="empty"`, and the figures stay `0` rather than being hidden.
 
-The bar registers into `conversation.composer.dock` (`kind: list`, declared by `ui-conversation`), the dock row directly below the composer. **The slot name is load-bearing**: `slots.inject` only ever runs its callback for a slot some bundle actually declares, so registering into an undeclared slot neither throws nor renders — which is precisely why this plugin once looked "installed but invisible".
+The bar registers into `sidebar.footer.action` (`kind: list`, declared by `ui-sidebar`), the row at the sidebar foot, **directly above the user name** (the account button). The sidebar renders `footerActions` and then `settingsArea` in one column, and the account button — avatar plus user name — is the `sidebar.settings` entry inside `settingsArea`, so this cell lands on top of the user name by construction. **The slot name is load-bearing**: `slots.inject` only ever runs its callback for a slot some bundle actually declares, so registering into an undeclared slot neither throws nor renders — which is precisely why this plugin once looked "installed but invisible".
+
+That seat is **root-scoped**, so the shell hands it no `sessionId`; the bar picks the current session out of the store itself, by `retainedBy.mainView > 0`. That is the shell's own test for "the main view is showing this session" — `ui-layout` selects the document title by exactly the same condition — so the bar reuses it rather than inventing a second definition of "current session".
 
 ## Request attribution
 
@@ -198,11 +218,11 @@ src/waste.ts               Pure folds: discarded usage into per-day totals and p
 src/projection.ts          wasteLedger projection: publishes the daily ledger to the Web client
 src/types.ts               The llm/waste event type (non-surface)
 src/brand.ts               WasteId branding for a discard identity
-src/client/index.ts        Browser half entry: registers the conversation.composer.dock slot and dictionaries
-src/client/StatusBar.tsx   The status bar component
+src/client/index.ts        Browser half entry: registers the sidebar.footer.action slot and dictionaries
+src/client/StatusBar.tsx   The status bar (stateless view + hover wrapper)
 src/client/locales.ts      zh (source of truth) / en dictionaries
 src/client/contracts.ts    Deliberately narrow surface for the browser kernel
-tests/                     Five specs; 59 cases
+tests/                     Five specs; 78 cases
 cordis.patch.yml           Profile patch that inserts the plugin row
 tsdown.config.ts           Dual build: lib/index.js (ESM, Node) + lib/client.js (CJS, browser)
 ```

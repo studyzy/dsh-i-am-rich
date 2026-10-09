@@ -36,6 +36,56 @@ Removed），正文用中文书写，与仓库的提交信息风格保持一致�
   tooltip 也一并改为「今日浪费 …」。新增两条测试逐个口径断言
   「浪费」/「Wasted」必须在场，防止文案被简化回去。
 
+### Changed
+
+- **状态条从输入框下方移到侧边栏左下角、用户名正上方。**
+  位置从 `conversation.composer.dock`（输入框下方的 dock 行）改为
+  `sidebar.footer.action`（`kind: list`，由 `ui-sidebar` 声明）。
+  侧边栏在 `footArea` 这一列里先渲染 `footerActions`、再渲染 `settingsArea`，
+  而左下角的账号按钮（头像 + 用户名）正是 `settingsArea` 里的
+  `sidebar.settings` 条目，所以这一格在版面上**天然落在用户名上面**，
+  且是 list 槽位里的新格子——不改动、不替换账号按钮本身。
+  该槽位已有的占用者是 `cordis-panel`，用新 `id` 即与之共存。
+  同步把 `package.json` 的 `dsh.client.inject` 从 `ui-conversation`
+  改为 `ui-sidebar`（槽位的声明方），并把
+  `tests/client-registration.spec.ts` 的声明集合换成 `ui-sidebar` 的
+  `children` 表，新增一条断言钉住「必须挂在用户名上方那一格」。
+- **状态条默认只显示「今日浪费」，鼠标悬停展开为竖排三行，每行各带一枚金币。**
+  侧边栏宽度是 264～420px（默认 280），三个带标签的口径排在**一行**
+  约需 330px，静止态放不下，所以**默认只渲染今日一个口径，
+  悬停时展开为今日 / 本月 / 累计三个**。
+  展开是**竖排三行而非一行三列**，这是宽度决定的：每行只有一个口径，
+  面板只需「最长那一行」的宽度即可待在侧边栏列内；若并排成一行，
+  就得按内容宽度（约 330px）铺开并压到侧边栏外面。
+  展开面板因此为 `flex-direction: column` + `width: 100%`，
+  只是从文档流里抬起（`position: relative` + 背景 + 阴影）
+  盖住下方账号按钮，避免悬停时把它顶来顶去。
+  **金币按行重复渲染**（三行三枚），而不是整个面板共用一枚——
+  三行各有各的金币才读得出是三个独立数字，而非一句被折行的句子。
+  悬停用 React state（`onMouseEnter` / `onMouseLeave`）而非 CSS `:hover`：
+  渲染几个口径是**渲染决定**，选择器能把样式改掉，但没法把本月与累计
+  两个节点变出来；这也与 shell 自己的底部控件（账号菜单）做法一致。
+  为此把组件拆成无状态的 `WasteStatusBarView`（接收显式 `expanded`）
+  与只负责悬停状态的 `WasteStatusBar`，两种形态因此都能作为纯函数断言，
+  测试无需引入 DOM 环境。
+  侧边栏**收起**时（`wide: false`，仅 56px）这一宽度约束悬停也解不开，
+  故收起态**始终**只渲染 `🪙 2249万`（标签也去掉），三个口径的
+  **精确整数**始终在 tooltip 里。
+  宽 / 收起由 `data-i-am-rich-wide` 标记，展开 / 收起由
+  `data-i-am-rich-expanded` 标记。
+  新增用例钉住：静止态恰为 1 行 1 枚金币、展开态恰为 3 行且顺序正确、
+  **每行恰有 1 枚金币**、容器 `flexDirection` 随状态在 `row` / `column`
+  间切换、`flexWrap: 'nowrap'` 在两种形态与两种宽度下都成立、
+  展开态确实抬起、悬停回调各触发一次、静止态仍保留「浪费」标签。
+  测试侧新增 `coinsOf` 辅助函数，并让 `periodText` 跳过行首金币，
+  使文案断言与金币断言彼此独立。
+- **`sidebar.footer.action` 是根作用域槽位，shell 不传 `sessionId`。**
+  状态条改为自己从 store 选当前会话：`retainedBy.mainView > 0`。
+  这正是 shell 自己的判定方式——`ui-layout` 选文档标题用的是同一条件——
+  因此复用它而不是另立一套「当前会话」定义；store 里没有任何会话被
+  主视图保留时，如实折叠为三个 `0`。
+  新增 4 条会话选择用例。
+
 ### Fixed
 
 - **状态条此前根本没有被挂载：注册的槽位 `shell.bottom` 并不存在。**

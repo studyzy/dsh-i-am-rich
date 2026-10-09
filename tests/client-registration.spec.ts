@@ -6,7 +6,7 @@
  * a declared slot. Nothing rendered, nothing threw, and the plugin looked
  * installed-but-dead. These cases pin the two properties that failure violated —
  * the registration actually reaches `slots.register`, and it targets a slot the
- * conversation surface really declares.
+ * sidebar really declares.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -14,17 +14,22 @@ import { apply, inject, SLOT } from '../src/client/index.ts'
 import { en, zh } from '../src/client/locales.ts'
 
 /**
- * The slot names the shipped `@deepseek-ai/dsh-client-ui-conversation` bundle
- * declares in its `children` table. Transcribed from
- * `lib/client.js`; the bar targets one of these and nothing else.
+ * The slot names the shipped `@deepseek-ai/dsh-client-ui-sidebar` bundle
+ * declares in its `children` table. Transcribed from `lib/client.js`; the bar
+ * targets one of these and nothing else.
+ *
+ * `sidebar.footer.action` is the one the bar uses, and it is the seat that puts
+ * the figures directly above the account button: the sidebar renders it in
+ * `footerActions`, which precedes `settingsArea` (the user name) in the foot
+ * column.
  */
-const DECLARED_BY_CONVERSATION = new Set([
-  'conversation.composer',
-  'conversation.composer.bar',
-  'conversation.composer.dock',
-  'conversation.header',
-  'conversation.input.dock',
-  'conversation.input.overlay',
+const DECLARED_BY_SIDEBAR = new Set([
+  'sidebar.brand.mark',
+  'sidebar.brand.name',
+  'sidebar.footer.action',
+  'sidebar.panellist',
+  'sidebar.settings',
+  'sidebar.workspaces',
 ])
 
 /** A slots service that records the handshake the way the renderer performs it. */
@@ -35,7 +40,7 @@ function fakeSlots(): {
 } {
   const injected: string[] = []
   const registered: { name: string; locale: string; id?: string; order?: number }[] = []
-  const declared = DECLARED_BY_CONVERSATION
+  const declared = DECLARED_BY_SIDEBAR
   return {
     injected,
     registered,
@@ -79,8 +84,17 @@ function mount(): {
 }
 
 describe('client half registration', () => {
-  it('registers into a slot the conversation surface actually declares', () => {
-    expect(DECLARED_BY_CONVERSATION.has(SLOT)).toBe(true)
+  it('registers into a slot the sidebar actually declares', () => {
+    expect(DECLARED_BY_SIDEBAR.has(SLOT)).toBe(true)
+  })
+
+  it('targets the foot row that renders above the account button', () => {
+    // The seat is load-bearing: `sidebar.settings` holds the account button
+    // (avatar and user name), and the sidebar renders `sidebar.footer.action`
+    // before it in the foot column. Registering into the wrong one would put
+    // the figures somewhere other than above the user name.
+    expect(SLOT).toBe('sidebar.footer.action')
+    expect(DECLARED_BY_SIDEBAR.has('sidebar.settings')).toBe(true)
   })
 
   it('reaches slots.register through the inject handshake', () => {
@@ -96,8 +110,9 @@ describe('client half registration', () => {
   it('registers a list entry with a stable id and order', () => {
     const { registered } = mount()
 
-    // `conversation.composer.dock` is a list slot, so entries are ordered by
-    // `order` and deduplicated by `id`.
+    // `sidebar.footer.action` is a list slot, so entries are ordered by
+    // `order` and deduplicated by `id`. A fresh id adds a cell beside the
+    // shipped entries; the shipped occupant is `cordis-panel`.
     expect(registered[0]?.id).toBe('i-am-rich')
     expect(typeof registered[0]?.order).toBe('number')
   })

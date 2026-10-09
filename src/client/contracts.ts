@@ -36,6 +36,15 @@ export interface WasteTotals {
 /** One session's projection values, keyed by registered projection key. */
 export interface SessionLike {
   readonly projectionValues?: Record<string, unknown> | undefined
+  /**
+   * How many surfaces currently retain this session, by surface name.
+   *
+   * The sidebar is a root-scope slot and receives no `sessionId`, so the bar
+   * identifies the session the main view is showing by this counter alone.
+   * `mainView > 0` is the shell's own idiom for "this is the active session",
+   * used verbatim by `ui-layout`'s document-title projection.
+   */
+  readonly retainedBy?: Record<string, number | undefined> | undefined
 }
 
 /** State shape the session store exposes to `useSessions` selectors. */
@@ -46,16 +55,18 @@ export interface SessionsState {
 /**
  * The slot this bar registers into.
  *
- * `conversation.composer.dock` is the standing seat the shell renders directly
- * below the composer, and it is `kind: 'list'`, so this entry sits alongside
- * the other docks rather than displacing one. It is declared by
- * `@deepseek-ai/dsh-client-ui-conversation`'s own `children` table.
+ * `sidebar.footer.action` is the sidebar's foot row, and it is `kind: 'list'`,
+ * so this entry is added beside the shipped entries rather than replacing one.
+ * The shell renders that row directly **above** `sidebar.settings`, which is
+ * the seat holding the account button (the avatar and user name at the bottom
+ * left) — so a contribution here sits immediately above the user name.
  *
+ * It is declared by `@deepseek-ai/dsh-client-ui-sidebar`'s own `children` table.
  * The name is spelled out here rather than imported: this package ships a
  * Host-facing plugin, and a browser type package would drag the whole UI stack
  * into every headless install that never renders the bar.
  */
-export type WasteSlotName = 'conversation.composer.dock'
+export type WasteSlotName = 'sidebar.footer.action'
 
 /** The slot registration options this plugin passes. */
 export interface SlotRegistration {
@@ -109,12 +120,18 @@ export interface SessionsHook {
   <T>(selector: (state: SessionsState) => T): T
 }
 
-/** Props the shell supplies to a `conversation.composer.dock` contribution. */
+/** Props the shell supplies to a `sidebar.footer.action` contribution. */
 export interface WasteDockProps {
   /** Standing seat: the session store hook. */
   readonly useSessions: SessionsHook
-  /** Standing seat: the active session id. */
-  readonly sessionId: string
+  /**
+   * Owner share: whether the sidebar renders wide content.
+   *
+   * The slot's own owner prop. `false` is the collapsed 56px rail, where the
+   * three "wasted" labels do not fit and the bar keeps only the coin and the
+   * three figures.
+   */
+  readonly wide: boolean
   /** Translation seat for this registration's locale namespace. */
   readonly t: (key: string, params?: Record<string, unknown>) => string
 }
