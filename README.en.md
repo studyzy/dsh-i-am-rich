@@ -44,7 +44,7 @@ one model request
                      │
                      └─> records the usage the provider reported for it
                               │
-                              └─> status bar: Today 120 · This month 1,200 · All time 8,400 tokens
+                              └─> status bar: 🪙 Wasted today 120 · Wasted this month 1200 · Wasted all time 8400
 ```
 
 Both copies are **real, billed provider requests**. Nothing is simulated or estimated: the second request goes over the network, the provider bills for it, and its content is dropped.
@@ -117,11 +117,40 @@ The status bar shows three figures side by side:
 
 The boundaries are covered by tests: a month rollover (`2025-12-31` is not part of this month), a year rollover (the same month and day last year is not "today"), and a malformed day key — which contributes only to the all-time figure and can never inflate a period it does not belong to.
 
+### Display format: a coin, and 万 / 亿
+
+The bar opens with a coin, and every period is abbreviated to a magnitude the reader can take in at a glance, picking the unit that fits the figure:
+
+```
+🪙 Wasted today 31.11M   Wasted this month 31.11M   Wasted all time 31.11M
+```
+
+**Each label spells out that the figure is waste; a bare "Today" is not enough.** The bar reports **the discarded copy**, not total spend, and `Today 31.11M` reads as consumption — the exact opposite of what this plugin isolates. So all three labels are full phrases: 今日浪费 / 本月浪费 / 累计浪费 in Chinese, `Wasted today` / `Wasted this month` / `Wasted all time` in English. A test asserts the word is present for every period, so it cannot be shortened back.
+
+| Size | Shown as | Example |
+| --- | --- | --- |
+| < 1 thousand | the plain integer | `842` |
+| 1 thousand – 1 million | K | `22.5K` |
+| 1 million – 1 billion | M | `31.11M` |
+| ≥ 1 billion | B | `2.5B` |
+
+The rule is **always the largest unit that fits**, rather than a fixed "billions + millions" pair — that would spell 31 million as the awkward `0B31M`. Rounding happens once, on the way out, and may **carry a figure up into the next unit**: `999,999,999` shows as `1B`, not `1000M`.
+
+Scaling affects the bar only. Hovering reveals the **exact integers** with thousands separators, because scaling is a presentation choice and the ledger is the record:
+
+```
+Today 31,114,724 · This month 31,114,724 · All time 31,114,724
+```
+
+Chinese does **not** use K/M/B, and English does **not** borrow 万/亿 — each dictionary groups large numbers the way its readers do, so `zh` shows `3111万` and `en` shows `31.11M`. Which family is in use is readable from the `data-i-am-rich-scale` attribute (`zh` / `en`) on the bar.
+
 ### The bar is always visible
 
 The status bar **renders from the moment the plugin is mounted**, showing three zeros before anything has been wasted.
 
-This is deliberate. The bar is the plugin's **only** visible evidence that it is mounted at all, and `shell.bottom` **reserves no space for empty content** — so if "no records yet" meant "render nothing", a correctly installed plugin would be **indistinguishable** from one that failed to load. That is exactly what made an early version look like "installed, but doing nothing". The empty state is marked with `data-i-am-rich-waste="empty"`, and the figures stay `0` rather than being hidden.
+This is deliberate. The bar is the plugin's **only** visible evidence that it is mounted at all, and a dock entry that renders nothing is **indistinguishable** from a plugin that failed to load — so if "no records yet" meant "render nothing", there would be no way to tell "mounted correctly" from "never mounted". That is exactly what made an early version look like "installed, but doing nothing". The empty state is marked with `data-i-am-rich-waste="empty"`, and the figures stay `0` rather than being hidden.
+
+The bar registers into `conversation.composer.dock` (`kind: list`, declared by `ui-conversation`), the dock row directly below the composer. **The slot name is load-bearing**: `slots.inject` only ever runs its callback for a slot some bundle actually declares, so registering into an undeclared slot neither throws nor renders — which is precisely why this plugin once looked "installed but invisible".
 
 ## Request attribution
 
@@ -165,15 +194,15 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full development setup and conv
 
 ```
 src/index.ts               Host plugin: hooks llm/stream, sends duplicates, records llm/waste
-src/waste.ts               Pure folds: discarded usage into per-day totals and periods
+src/waste.ts               Pure folds: discarded usage into per-day totals and periods, scaled to a readable magnitude
 src/projection.ts          wasteLedger projection: publishes the daily ledger to the Web client
 src/types.ts               The llm/waste event type (non-surface)
 src/brand.ts               WasteId branding for a discard identity
-src/client/index.ts        Browser half entry: registers the shell.bottom slot and dictionaries
+src/client/index.ts        Browser half entry: registers the conversation.composer.dock slot and dictionaries
 src/client/StatusBar.tsx   The status bar component
 src/client/locales.ts      zh (source of truth) / en dictionaries
 src/client/contracts.ts    Deliberately narrow surface for the browser kernel
-tests/                     Four specs; 40 cases
+tests/                     Five specs; 59 cases
 cordis.patch.yml           Profile patch that inserts the plugin row
 tsdown.config.ts           Dual build: lib/index.js (ESM, Node) + lib/client.js (CJS, browser)
 ```

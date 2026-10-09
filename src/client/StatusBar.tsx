@@ -14,12 +14,12 @@
  */
 
 import type { CSSProperties } from 'react'
-import type { ShellBottomProps, WasteLedgerView } from './contracts.ts'
-import { sumPeriods } from '../waste.ts'
-import type { IAmRichKey } from './locales.ts'
+import type { WasteDockProps, WasteLedgerView } from './contracts.ts'
+import { sumPeriods, toMagnitude, type MagnitudeUnit } from '../waste.ts'
+import { COIN, type IAmRichKey } from './locales.ts'
 
 /** Props the shell composes for this contribution. */
-export type WasteStatusBarProps = ShellBottomProps
+export type WasteStatusBarProps = WasteDockProps
 
 /**
  * Inline styling for the bar.
@@ -56,6 +56,8 @@ const VALUE: CSSProperties = {
 
 const UNIT: CSSProperties = { opacity: 0.7, fontSize: 11 }
 
+const COIN_STYLE: CSSProperties = { fontSize: 13, lineHeight: '18px' }
+
 /** The periods the bar renders, in display order. */
 const PERIODS = ['today', 'month', 'total'] as const
 
@@ -71,6 +73,9 @@ function asLedger(value: unknown): WasteLedgerView | undefined {
 
 /**
  * Format a token count with the reader's thousands separators.
+ *
+ * Used for the tooltip only: on the bar itself a six-figure number is noise,
+ * but a reader who hovers is asking for the exact figure and should get it.
  * @param count - the token count to format.
  * @returns the count as localized digits.
  */
@@ -79,15 +84,29 @@ function formatTokens(count: number): string {
 }
 
 /**
+ * The locale key naming one magnitude scale.
+ * @param unit - the scale a count was rendered in.
+ * @returns the dictionary key for that scale's unit label.
+ */
+function unitKey(unit: MagnitudeUnit): IAmRichKey {
+  return `unit.${unit}` as IAmRichKey
+}
+
+/**
  * Render today's, this month's, and all-time discarded-token totals.
  *
  * Always renders the three periods, including before the first discard has been
- * recorded. The bar is the only signal that the plugin is mounted at all, and
- * `shell.bottom` reserves no space for empty content, so returning nothing
- * until the first waste event would make a correctly-installed plugin
- * indistinguishable from one that failed to load. A session that publishes no
- * ledger folds to zeroes, which is the honest reading of "nothing wasted yet".
- * @param props - the shell's standing seats for a bottom-bar contribution.
+ * recorded. The bar is the only signal that the plugin is mounted at all, and a
+ * dock entry that renders nothing is indistinguishable from one that failed to
+ * load, so returning nothing until the first waste event would hide the
+ * plugin's own presence. A session that publishes no ledger folds to zeroes,
+ * which is the honest reading of "nothing wasted yet".
+ *
+ * The figures are scaled to 万/亿 (or K/M/B under `en`) so a count in the tens of
+ * millions reads as `2,249万` rather than a digit string nobody parses at a
+ * glance. The tooltip keeps the exact integers, because scaling is a display
+ * choice and the ledger is the record.
+ * @param props - the shell's standing seats for a dock contribution.
  * @returns the status bar.
  */
 export function WasteStatusBar({ useSessions, sessionId, t }: WasteStatusBarProps) {
@@ -99,6 +118,17 @@ export function WasteStatusBar({ useSessions, sessionId, t }: WasteStatusBarProp
   // re-runs this component when the ledger identity changes.
   const periods = sumPeriods(ledger?.days ?? {}, new Date())
   const hasWaste = periods.total > 0 || periods.totalCalls > 0 || periods.unpricedCalls > 0
+
+  // Which scale family the reader groups large numbers by. Taken from the
+  // dictionary rather than the language code so the two stay in step: the
+  // English entry for 万 is K, and reading 亿 as 亿 under `en` would be worse
+  // than reading it as M.
+  const scale = translate('waste.scale') === 'en' ? 'en' : 'zh'
+  const figures = {
+    today: toMagnitude(periods.today, scale),
+    month: toMagnitude(periods.month, scale),
+    total: toMagnitude(periods.total, scale),
+  }
 
   const calls: Record<PeriodKey, number> = {
     today: periods.todayCalls,
@@ -121,15 +151,17 @@ export function WasteStatusBar({ useSessions, sessionId, t }: WasteStatusBarProp
     <span
       style={BAR}
       data-i-am-rich-waste={hasWaste ? 'total' : 'empty'}
+      data-i-am-rich-scale={scale}
       role="status"
       aria-label={translate('waste.aria')}
       title={tooltip}
     >
+      <span style={COIN_STYLE} data-i-am-rich-coin aria-hidden="true">{COIN}</span>
       {PERIODS.map(period => (
         <span key={period} style={FIGURE} data-i-am-rich-period={period} data-calls={calls[period]}>
           <span style={LABEL}>{translate(`period.${period}` as IAmRichKey)}</span>
-          <span style={VALUE}>{formatTokens(periods[period])}</span>
-          <span style={UNIT}>{translate('waste.unit')}</span>
+          <span style={VALUE}>{figures[period].value}</span>
+          <span style={UNIT}>{translate(unitKey(figures[period].unit))}</span>
         </span>
       ))}
     </span>

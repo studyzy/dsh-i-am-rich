@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { WasteStatusBar } from '../src/client/StatusBar.tsx'
-import { en, zh } from '../src/client/locales.ts'
+import { en, zh, COIN } from '../src/client/locales.ts'
 import type { SessionLike, WasteLedgerView, WasteTotals } from '../src/client/contracts.ts'
 
 /** Build a day bucket with the given token count. */
@@ -44,6 +44,8 @@ function daysFromToday(offsetDays: number): Date {
  *
  * Today is +0, so it always falls inside the current month; the older entry is
  * dated 40 days back, which is outside the current month in every calendar.
+ * Every figure stays below 1,000 so the bar renders it unscaled, keeping these
+ * cases about the fold rather than about magnitude formatting.
  */
 function ledger(): WasteLedgerView {
   return {
@@ -87,22 +89,56 @@ function textOf(element: React.ReactElement | null): string {
   return walk(element)
 }
 
+/**
+ * Find the first node in a rendered tree carrying a given prop.
+ *
+ * Searched depth-first rather than by position: the bar's children include the
+ * coin alongside a nested list of period figures, so reaching a figure by index
+ * would couple every case to the decorative siblings around it.
+ * @param node - the element tree to search.
+ * @param prop - the data attribute to match.
+ * @returns the matching element, or undefined.
+ */
+function findByProp(node: unknown, prop: string): React.ReactElement | undefined {
+  if (node === null || node === undefined || typeof node !== 'object') return undefined
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findByProp(child, prop)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  const element = node as React.ReactElement & { props?: Record<string, unknown> }
+  if (element.props?.[prop] !== undefined) return element
+  return findByProp(element.props?.children, prop)
+}
+
 /** Read one period figure's rendered text from the bar. */
 function periodText(element: React.ReactElement | null, period: string): string {
   const figures = (element?.props as { children?: unknown })?.children
-  const list = Array.isArray(figures) ? figures : [figures]
-  const match = list.find(node => (node as { props?: { 'data-i-am-rich-period'?: string } })
-    ?.props?.['data-i-am-rich-period'] === period)
-  return textOf(match as React.ReactElement)
+  const found = (function search(node: unknown): React.ReactElement | undefined {
+    if (node === null || node === undefined || typeof node !== 'object') return undefined
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const hit = search(child)
+        if (hit !== undefined) return hit
+      }
+      return undefined
+    }
+    const el = node as React.ReactElement & { props?: Record<string, unknown> }
+    if (el.props?.['data-i-am-rich-period'] === period) return el
+    return search(el.props?.children)
+  })(figures)
+  return textOf(found as React.ReactElement)
 }
 
 describe('waste status bar', () => {
   it('renders today, this month, and all-time figures', () => {
     const element = render({ projectionValues: { wasteLedger: ledger() } })
 
-    expect(periodText(element, 'today')).toBe('Today100tokens')
-    expect(periodText(element, 'month')).toBe('This month300tokens')
-    expect(periodText(element, 'total')).toBe('All time700tokens')
+    expect(periodText(element, 'today')).toBe('Wasted today100')
+    expect(periodText(element, 'month')).toBe('Wasted this month300')
+    expect(periodText(element, 'total')).toBe('Wasted all time700')
   })
 
   it('renders Chinese copy through the zh dictionary', () => {
@@ -113,9 +149,9 @@ describe('waste status bar', () => {
     }
     const element = render({ projectionValues: { wasteLedger: ledger() } }, translate as never)
 
-    expect(periodText(element, 'today')).toBe('今日100Token')
-    expect(periodText(element, 'month')).toBe('本月300Token')
-    expect(periodText(element, 'total')).toBe('累计700Token')
+    expect(periodText(element, 'today')).toBe('今日浪费100')
+    expect(periodText(element, 'month')).toBe('本月浪费300')
+    expect(periodText(element, 'total')).toBe('累计浪费700')
   })
 
   it('sums a month that has already rolled over', () => {
@@ -124,21 +160,22 @@ describe('waste status bar', () => {
     const stale: WasteLedgerView = { days: { [dayKey(daysFromToday(-40))]: bucket(400) } }
     const element = render({ projectionValues: { wasteLedger: stale } })
 
-    expect(periodText(element, 'today')).toBe('Today0tokens')
-    expect(periodText(element, 'month')).toBe('This month0tokens')
-    expect(periodText(element, 'total')).toBe('All time400tokens')
+    expect(periodText(element, 'today')).toBe('Wasted today0')
+    expect(periodText(element, 'month')).toBe('Wasted this month0')
+    expect(periodText(element, 'total')).toBe('Wasted all time400')
   })
 
   it('shows three zeros when the session publishes no ledger', () => {
-    // The bar is the only visible sign the plugin is mounted, and `shell.bottom`
-    // reserves no space for empty content, so absence must still render.
+    // The bar is the only visible sign the plugin is mounted, and a dock entry
+    // that renders nothing is indistinguishable from one that failed to load,
+    // so absence must still render.
     for (const session of [{}, undefined]) {
       const element = render(session)
 
       expect(element?.props['data-i-am-rich-waste']).toBe('empty')
-      expect(periodText(element, 'today')).toBe('Today0tokens')
-      expect(periodText(element, 'month')).toBe('This month0tokens')
-      expect(periodText(element, 'total')).toBe('All time0tokens')
+      expect(periodText(element, 'today')).toBe('Wasted today0')
+      expect(periodText(element, 'month')).toBe('Wasted this month0')
+      expect(periodText(element, 'total')).toBe('Wasted all time0')
     }
   })
 
@@ -147,7 +184,7 @@ describe('waste status bar', () => {
       const element = render({ projectionValues: { wasteLedger: bad } })
 
       expect(element?.props['data-i-am-rich-waste']).toBe('empty')
-      expect(periodText(element, 'total')).toBe('All time0tokens')
+      expect(periodText(element, 'total')).toBe('Wasted all time0')
     }
   })
 
@@ -156,7 +193,7 @@ describe('waste status bar', () => {
 
     expect(element?.props['data-i-am-rich-waste']).toBe('empty')
     expect(element?.props.title).toBe('No tokens wasted yet')
-    expect(periodText(element, 'total')).toBe('All time0tokens')
+    expect(periodText(element, 'total')).toBe('Wasted all time0')
   })
 
   it('names unpriced calls in the tooltip instead of counting them as tokens', () => {
@@ -165,7 +202,7 @@ describe('waste status bar', () => {
     }
     const element = render({ projectionValues: { wasteLedger: withUnpriced } })
 
-    expect(periodText(element, 'total')).toBe('All time600tokens')
+    expect(periodText(element, 'total')).toBe('Wasted all time600')
     expect(element?.props.title).toContain('2 billed calls')
     expect(element?.props.title).toContain('4 more calls reported no usage')
   })
@@ -178,6 +215,96 @@ describe('waste status bar', () => {
 
     // Tokens are zero, but unpriced calls exist, so the bar is not "empty".
     expect(element?.props.title).toContain('3 more calls reported no usage')
-    expect(periodText(element, 'total')).toBe('All time0tokens')
+    expect(periodText(element, 'total')).toBe('Wasted all time0')
+  })
+})
+
+describe('magnitude display', () => {
+  /** A ledger whose spend lands entirely on today, at the given size. */
+  function spend(tokens: number): WasteLedgerView {
+    return { days: { [dayKey(daysFromToday(0))]: bucket(tokens) } }
+  }
+
+  /** The zh translator, interpolating params the way the real seat does. */
+  const zhT = (key: keyof typeof zh, params?: Record<string, unknown>) => {
+    const template = zh[key] as string
+    if (params === undefined) return template
+    return template.replace(/\{(\w+)\}/g, (_match, name: string) => String(params[name] ?? ''))
+  }
+
+  it('leads with a coin', () => {
+    const element = render({ projectionValues: { wasteLedger: spend(100) } })
+    const coin = findByProp(element, 'data-i-am-rich-coin')
+
+    expect(coin).toBeDefined()
+    expect(textOf(coin as React.ReactElement)).toBe(COIN)
+    // Decorative: the accessible name comes from the aria-label, not the glyph.
+    expect(coin?.props['aria-hidden']).toBe('true')
+  })
+
+  it('scales a six-figure count to 万 in Chinese', () => {
+    // 22,488,345 is the real ledger total; it is not yet 亿, so it reads as 万.
+    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } }, zhT as never)
+
+    expect(periodText(element, 'today')).toBe('今日浪费2249万')
+    expect(periodText(element, 'month')).toBe('本月浪费2249万')
+    expect(periodText(element, 'total')).toBe('累计浪费2249万')
+  })
+
+  it('spells out 浪费 in every Chinese label, not just the period', () => {
+    // The bar must say what happened, not merely when: a bare "今日 2249万"
+    // reads as a spend figure, which is the opposite of what this plugin counts.
+    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } }, zhT as never)
+
+    for (const period of ['today', 'month', 'total']) {
+      expect(periodText(element, period)).toContain('浪费')
+    }
+  })
+
+  it('names the waste in every English label too', () => {
+    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } })
+
+    for (const period of ['today', 'month', 'total']) {
+      expect(periodText(element, period)).toContain('Wasted')
+    }
+  })
+
+  it('scales a nine-figure count to 亿 in Chinese', () => {
+    const element = render({ projectionValues: { wasteLedger: spend(250_000_000) } }, zhT as never)
+
+    expect(periodText(element, 'today')).toBe('今日浪费2.5亿')
+    expect(periodText(element, 'total')).toBe('累计浪费2.5亿')
+  })
+
+  it('uses K/M/B under the English dictionary rather than 万/亿', () => {
+    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } })
+
+    expect(periodText(element, 'today')).toBe('Wasted today22.49M')
+    expect(periodText(element, 'total')).toBe('Wasted all time22.49M')
+  })
+
+  it('never renders a bare 0亿 for a figure that is plainly millions', () => {
+    // The whole point of picking the largest applicable unit: 22.5M must not be
+    // written as "0亿".
+    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } }, zhT as never)
+
+    expect(periodText(element, 'total')).not.toContain('0亿')
+    expect(periodText(element, 'total')).toBe('累计浪费2249万')
+  })
+
+  it('keeps the exact integer in the tooltip while the bar is scaled', () => {
+    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } }, zhT as never)
+
+    // Display is scaled; the tooltip is the record.
+    expect(periodText(element, 'total')).toBe('累计浪费2249万')
+    expect(element?.props.title).toContain('22,488,345')
+  })
+
+  it('marks which scale family the bar rendered in', () => {
+    const cn = render({ projectionValues: { wasteLedger: spend(100) } }, zhT as never)
+    const us = render({ projectionValues: { wasteLedger: spend(100) } })
+
+    expect(cn?.props['data-i-am-rich-scale']).toBe('zh')
+    expect(us?.props['data-i-am-rich-scale']).toBe('en')
   })
 })

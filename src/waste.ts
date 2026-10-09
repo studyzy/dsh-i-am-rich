@@ -161,3 +161,63 @@ export function sumPeriods(days: Record<string, WasteTotals>, now: Date): WasteP
     unpricedCalls,
   }
 }
+
+/** A token count rendered at a magnitude the reader can take in at a glance. */
+export interface Magnitude {
+  /** The significant digits, already rounded for display. */
+  readonly value: number
+  /** The scale the digits are expressed in. */
+  readonly unit: MagnitudeUnit
+}
+
+/** The scales a rendered magnitude can use. */
+export type MagnitudeUnit = 'plain' | 'wan' | 'yi' | 'thousand' | 'million' | 'billion'
+
+/** One scale's divisor and display unit, in ascending order of size. */
+const SCALES: readonly { readonly unit: MagnitudeUnit; readonly factor: number; readonly decimals: number }[] = [
+  { unit: 'plain', factor: 1, decimals: 0 },
+  { unit: 'wan', factor: 1e4, decimals: 0 },
+  { unit: 'yi', factor: 1e8, decimals: 2 },
+]
+
+/** The same scales under the English names the `en` dictionary shows. */
+const EN_SCALES: readonly { readonly unit: MagnitudeUnit; readonly factor: number; readonly decimals: number }[] = [
+  { unit: 'plain', factor: 1, decimals: 0 },
+  { unit: 'thousand', factor: 1e3, decimals: 1 },
+  { unit: 'million', factor: 1e6, decimals: 2 },
+  { unit: 'billion', factor: 1e9, decimals: 2 },
+]
+
+/**
+ * Scale a token count to the largest unit that keeps it readable.
+ *
+ * The Chinese scales are 万 and 亿 because those are the boundaries a Chinese
+ * reader groups large numbers by; the English scales are K/M/B for the same
+ * reason. Picking the largest applicable unit — rather than always emitting a
+ * fixed pair — is what keeps `0亿` out of the display for a figure that is
+ * plainly a few million.
+ *
+ * Rounding happens once, on the way out, and may carry a value up into the next
+ * unit (`99,999,999` → `1.00亿`). That is deliberate: the alternative prints
+ * `10000万`, which is a number no reader would say out loud. The trade is that a
+ * rounded display can read as exactly `1.00亿` while the ledger holds slightly
+ * less; the tooltip carries the exact figure for that reason.
+ * @param tokens - the token count to scale.
+ * @param scale - which scale family to use.
+ * @returns the rounded digits and the unit they are expressed in.
+ */
+export function toMagnitude(tokens: number, scale: 'zh' | 'en' = 'zh'): Magnitude {
+  const source = scale === 'en' ? EN_SCALES : SCALES
+  const safe = Number.isFinite(tokens) && tokens > 0 ? tokens : 0
+  let chosen = source[0]!
+  for (const candidate of source) if (safe >= candidate.factor) chosen = candidate
+  const value = safe / chosen.factor
+  const rounded = Number(value.toFixed(chosen.decimals))
+  // A rounded value that reaches the next scale is re-expressed in it, so the
+  // bar never shows a unit the reader would have carried themselves.
+  const next = source[source.indexOf(chosen) + 1]
+  if (next !== undefined && rounded >= next.factor / chosen.factor) {
+    return { value: Number((safe / next.factor).toFixed(next.decimals)), unit: next.unit }
+  }
+  return { value: rounded, unit: chosen.unit }
+}

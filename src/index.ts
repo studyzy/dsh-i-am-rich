@@ -26,7 +26,7 @@ import type { LlmWasteEventData, WasteOutcome } from './types.ts'
 export type { LlmWasteEventData, WasteOutcome } from './types.ts'
 // `WasteId` is one name carrying both a type and a constructor.
 export { WasteId } from './brand.ts'
-export { addWaste, EMPTY_TOTALS, localDay, localMonth, sumPeriods, totalTokens, type WastePeriods, type WasteTotals } from './waste.ts'
+export { addWaste, EMPTY_TOTALS, localDay, localMonth, sumPeriods, toMagnitude, totalTokens, type Magnitude, type MagnitudeUnit, type WastePeriods, type WasteTotals } from './waste.ts'
 export { createWasteLedgerProjection, type WasteLedgerState, type WasteLedgerView } from './projection.ts'
 
 export const name = 'i-am-rich'

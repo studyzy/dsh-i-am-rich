@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { addWaste, EMPTY_TOTALS, localDay, localMonth, sumPeriods, totalTokens, type WasteTotals } from '../src/waste.ts'
+import { addWaste, EMPTY_TOTALS, localDay, localMonth, sumPeriods, toMagnitude, totalTokens, type WasteTotals } from '../src/waste.ts'
 import type { LlmWasteEventData, WasteId } from '../src/types.ts'
 
 /** Build one discard record for the fold. */
@@ -179,5 +179,41 @@ describe('period totals', () => {
     expect(periods.today).toBe(100)
     expect(periods.month).toBe(100)
     expect(periods.total).toBe(1000)
+  })
+})
+describe('toMagnitude', () => {
+  it('leaves a small count unscaled', () => {
+    expect(toMagnitude(0)).toEqual({ value: 0, unit: 'plain' })
+    expect(toMagnitude(842)).toEqual({ value: 842, unit: 'plain' })
+    expect(toMagnitude(9_999)).toEqual({ value: 9999, unit: 'plain' })
+  })
+
+  it('scales to 万 from ten thousand up to under 亿', () => {
+    expect(toMagnitude(10_000)).toEqual({ value: 1, unit: 'wan' })
+    expect(toMagnitude(22_488_345)).toEqual({ value: 2249, unit: 'wan' })
+    expect(toMagnitude(99_990_000)).toEqual({ value: 9999, unit: 'wan' })
+  })
+
+  it('scales to 亿 from one hundred million up', () => {
+    expect(toMagnitude(100_000_000)).toEqual({ value: 1, unit: 'yi' })
+    expect(toMagnitude(250_000_000)).toEqual({ value: 2.5, unit: 'yi' })
+    expect(toMagnitude(22_488_345_678)).toEqual({ value: 224.88, unit: 'yi' })
+  })
+
+  it('carries a rounded value up into the next unit', () => {
+    // 99,999,999 must not print as "10000万": the carry re-expresses it as 亿.
+    expect(toMagnitude(99_999_999)).toEqual({ value: 1, unit: 'yi' })
+  })
+
+  it('uses K/M/B scales for English readers', () => {
+    expect(toMagnitude(842, 'en')).toEqual({ value: 842, unit: 'plain' })
+    expect(toMagnitude(22_488_345, 'en')).toEqual({ value: 22.49, unit: 'million' })
+    expect(toMagnitude(2_500_000_000, 'en')).toEqual({ value: 2.5, unit: 'billion' })
+  })
+
+  it('treats non-finite and negative input as zero rather than rendering NaN', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      expect(toMagnitude(bad)).toEqual({ value: 0, unit: 'plain' })
+    }
   })
 })
