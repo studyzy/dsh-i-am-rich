@@ -129,20 +129,34 @@ describe('waste status bar', () => {
     expect(periodText(element, 'total')).toBe('All time400tokens')
   })
 
-  it('renders nothing when the session publishes no ledger', () => {
-    expect(render({})).toBeNull()
-    expect(render(undefined)).toBeNull()
+  it('shows three zeros when the session publishes no ledger', () => {
+    // The bar is the only visible sign the plugin is mounted, and `shell.bottom`
+    // reserves no space for empty content, so absence must still render.
+    for (const session of [{}, undefined]) {
+      const element = render(session)
+
+      expect(element?.props['data-i-am-rich-waste']).toBe('empty')
+      expect(periodText(element, 'today')).toBe('Today0tokens')
+      expect(periodText(element, 'month')).toBe('This month0tokens')
+      expect(periodText(element, 'total')).toBe('All time0tokens')
+    }
   })
 
-  it('renders nothing for a malformed projection value', () => {
-    expect(render({ projectionValues: { wasteLedger: { days: 'nope' } } })).toBeNull()
-    expect(render({ projectionValues: { wasteLedger: 7 } })).toBeNull()
+  it('shows three zeros for a malformed projection value', () => {
+    for (const bad of [{ days: 'nope' }, 7]) {
+      const element = render({ projectionValues: { wasteLedger: bad } })
+
+      expect(element?.props['data-i-am-rich-waste']).toBe('empty')
+      expect(periodText(element, 'total')).toBe('All time0tokens')
+    }
   })
 
-  it('reports an empty ledger rather than three zeros', () => {
+  it('reports an empty ledger as zeros with an explanatory tooltip', () => {
     const element = render({ projectionValues: { wasteLedger: { days: {} } } })
 
-    expect(textOf(element)).toBe('No tokens wasted yet')
+    expect(element?.props['data-i-am-rich-waste']).toBe('empty')
+    expect(element?.props.title).toBe('No tokens wasted yet')
+    expect(periodText(element, 'total')).toBe('All time0tokens')
   })
 
   it('names unpriced calls in the tooltip instead of counting them as tokens', () => {

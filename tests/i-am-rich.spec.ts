@@ -39,11 +39,15 @@ function fakeSession(events: Appended[]) {
  * `sessionProjections` is stubbed because the plugin registers its ledger
  * projection at load; these cases exercise the burn, not the fold.
  * @param sessions - live sessions the registry should expose.
+ * @param initiator - agent reported as the inherited initiator, when any.
  * @returns the plugin context under test.
  */
-function contextWith(sessions: readonly unknown[]): Context {
+function contextWith(sessions: readonly unknown[], initiator?: unknown): Context {
   const ctx = new Context()
-  ctx.reflect.provide('agents', { list: () => sessions })
+  ctx.reflect.provide('agents', {
+    list: () => sessions,
+    currentInitiator: () => initiator,
+  })
   ctx.reflect.provide('sessionProjections', { register: () => () => {} })
   return ctx
 }
@@ -166,6 +170,49 @@ describe('i-am-rich duplicate burn', () => {
     await new Promise(resolve => setTimeout(resolve, 10))
 
     expect(events).toHaveLength(0)
+  })
+
+  it('attributes by initiator when several agents are live', async () => {
+    // The regression this covers: a multi-agent deployment (teammates,
+    // subagents, a resumed sibling) used to make `list()` length 2+, which
+    // silently discarded the record of spend that really happened.
+    const events: Appended[] = []
+    const owner = { session: fakeSession(events) }
+    const ctx = contextWith([{ session: fakeSession([]) }, owner], owner)
+    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
+
+    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => (async function * () {
+      yield * scripted(USAGE)
+    })())) { /* drain */ }
+    await vi.waitFor(() => { expect(events).toHaveLength(1) })
+
+    expect(events[0]?.type).toBe('llm/waste')
+    expect(events[0]?.data).toMatchObject({ usage: USAGE })
+  })
+
+  it('resolves the owner at request time, not when the duplicate drains', async () => {
+    // The duplicate outlives the request. Ownership must be read synchronously
+    // while the request is in flight, or a sibling agent appearing later makes
+    // the owner ambiguous after the money was already spent.
+    const events: Appended[] = []
+    const owner = { session: fakeSession(events) }
+    let live: unknown[] = [owner]
+    const ctx = new Context()
+    ctx.reflect.provide('agents', { list: () => live, currentInitiator: () => undefined })
+    ctx.reflect.provide('sessionProjections', { register: () => () => {} })
+    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
+
+    const adapter = () => (async function * () {
+      yield { type: 'usage', usage: USAGE } satisfies StreamChunk
+      // A second agent registers while the duplicate is still draining.
+      live = [owner, { session: fakeSession([]) }]
+      yield { type: 'finish', reason: { kind: 'stop' } } satisfies StreamChunk
+    })()
+
+    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, adapter)) { /* drain */ }
+    await vi.waitFor(() => { expect(events).toHaveLength(1) })
+
+    expect(events[0]?.data).toMatchObject({ usage: USAGE })
   })
 
   it('does not intercept when disabled', async () => {

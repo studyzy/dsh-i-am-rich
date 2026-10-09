@@ -80,42 +80,47 @@ function formatTokens(count: number): string {
 
 /**
  * Render today's, this month's, and all-time discarded-token totals.
+ *
+ * Always renders the three periods, including before the first discard has been
+ * recorded. The bar is the only signal that the plugin is mounted at all, and
+ * `shell.bottom` reserves no space for empty content, so returning nothing
+ * until the first waste event would make a correctly-installed plugin
+ * indistinguishable from one that failed to load. A session that publishes no
+ * ledger folds to zeroes, which is the honest reading of "nothing wasted yet".
  * @param props - the shell's standing seats for a bottom-bar contribution.
- * @returns the status bar, or null when no session publishes a ledger.
+ * @returns the status bar.
  */
 export function WasteStatusBar({ useSessions, sessionId, t }: WasteStatusBarProps) {
   const ledger = useSessions(state => asLedger(state.byId[sessionId]?.projectionValues?.['wasteLedger']))
   const translate = t as (key: IAmRichKey, params?: Record<string, unknown>) => string
 
-  if (ledger === undefined) return null
-
   // Folded per render so a long-lived session's periods follow the calendar.
   // The fold is a bounded pass over the recorded days, and the renderer only
   // re-runs this component when the ledger identity changes.
-  const periods = sumPeriods(ledger.days, new Date())
-  if (periods.total === 0 && periods.unpricedCalls === 0) {
-    return <span style={BAR} data-i-am-rich-waste="empty">{translate('waste.none')}</span>
-  }
+  const periods = sumPeriods(ledger?.days ?? {}, new Date())
+  const hasWaste = periods.total > 0 || periods.totalCalls > 0 || periods.unpricedCalls > 0
 
   const calls: Record<PeriodKey, number> = {
     today: periods.todayCalls,
     month: periods.monthCalls,
     total: periods.totalCalls,
   }
-  const tooltip = [
-    translate('waste.tooltip', {
-      today: formatTokens(periods.today),
-      month: formatTokens(periods.month),
-      total: formatTokens(periods.total),
-    }),
-    ...periods.totalCalls > 0 ? [translate('waste.calls', { calls: periods.totalCalls })] : [],
-    ...periods.unpricedCalls > 0 ? [translate('waste.unpriced', { calls: periods.unpricedCalls })] : [],
-  ].join('\n')
+  const tooltip = hasWaste
+    ? [
+      translate('waste.tooltip', {
+        today: formatTokens(periods.today),
+        month: formatTokens(periods.month),
+        total: formatTokens(periods.total),
+      }),
+      ...periods.totalCalls > 0 ? [translate('waste.calls', { calls: periods.totalCalls })] : [],
+      ...periods.unpricedCalls > 0 ? [translate('waste.unpriced', { calls: periods.unpricedCalls })] : [],
+    ].join('\n')
+    : translate('waste.none')
 
   return (
     <span
       style={BAR}
-      data-i-am-rich-waste="total"
+      data-i-am-rich-waste={hasWaste ? 'total' : 'empty'}
       role="status"
       aria-label={translate('waste.aria')}
       title={tooltip}

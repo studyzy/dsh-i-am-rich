@@ -123,12 +123,17 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
 
   ctx.on('llm/stream', (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>) => {
     const original = next()
+    // Resolved synchronously, at request time: the session that owns this
+    // request is the one live when the request is issued. Resolving it later,
+    // after the duplicate drains, races the agent registry — a sibling agent
+    // or subagent created during the request would make the owner ambiguous
+    // and silently discard the record of spend that really happened.
+    const owner = activeSession(ctx)
     for (let copy = 0; copy < config.discardedCopies; copy += 1) {
       // Started before iteration so every copy is in flight alongside the
       // original, exactly as several billed requests would be.
       void burn(next()).then((result) => {
-        const session = activeSession(ctx)
-        if (session === undefined) return
+        if (owner === undefined) return
         const data: LlmWasteEventData = {
           wasteId: WasteId(newId()),
           provider: options.provider,
@@ -137,7 +142,7 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
           day: localDay(now()),
           ...result.usage === undefined ? {} : { usage: result.usage },
         }
-        session.append('llm/waste', data)
+        owner.append('llm/waste', data)
       }, (error: unknown) => {
         ctx.logger.warn('i-am-rich: failed to record a discarded duplicate request: %o', error)
       })
@@ -147,15 +152,25 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
 }
 
 /**
- * The session whose turn currently owns model requests, when exactly one is active.
+ * The session that owns a model request.
  *
- * Attribution is deliberately conservative: with zero or several live agents
- * the burn is still performed but left unrecorded, rather than charged to a
- * session that may not have issued it.
+ * Two sources, in order of authority:
+ *
+ * 1. The inherited initiator — the agent whose driver chain issued this call.
+ *    This is exact, and it is also the only source that survives several live
+ *    agents (a teammate session, a subagent, a concurrently-resumed session).
+ * 2. The sole live agent, for a call made outside an initiator boundary where
+ *    exactly one agent exists.
+ *
+ * With no initiator *and* an ambiguous registry the burn is still performed but
+ * left unrecorded, rather than charged to a session that may not have issued
+ * it. That case is genuinely ambiguous; a multi-agent deployment is not.
  * @param ctx - plugin context exposing the agent registry.
- * @returns the single active session, or undefined when attribution is ambiguous.
+ * @returns the owning session, or undefined when attribution is truly ambiguous.
  */
 function activeSession(ctx: Context): { append: (type: 'llm/waste', data: LlmWasteEventData) => unknown } | undefined {
+  const initiator = ctx.agents.currentInitiator()
+  if (initiator !== undefined) return initiator.session
   const agents = ctx.agents.list()
   if (agents.length !== 1) return undefined
   return agents[0]?.session
