@@ -1,6 +1,6 @@
 # dsh-i-am-rich
 
-> Sends every model request twice, throws the second copy away, and honestly reports how many tokens you wasted today.
+> Sends every model request twice, throws the second copy away, and honestly reports how many tokens you wasted today, this month, and in total.
 
 A DeepSeek Harness plugin whose only purpose is to **genuinely spend twice as much money** and then **honestly** show you the waste.
 
@@ -13,7 +13,7 @@ one model request
                      │
                      └─> records the usage the provider reported for it
                               │
-                              └─> status bar: "Wasted 1,200 tokens today"
+                              └─> status bar: Today 120 · This month 1,200 · All time 8,400 tokens
 ```
 
 Both copies are **real, billed provider requests**. Nothing is simulated or estimated: the second request goes over the network, the provider bills for it, and its content is dropped.
@@ -57,6 +57,20 @@ Every figure in the status bar is **usage the provider itself reported**. Nothin
 
 Totals are bucketed by local calendar day. The day is stamped when the Host appends the record, so **replay produces exactly the figures seen live** and does not depend on a clock at read time.
 
+### The three periods
+
+The status bar shows three figures side by side:
+
+| Period | Meaning |
+| --- | --- |
+| Today | The single local calendar day that is "now". |
+| This month | The whole current local calendar month. |
+| All time | Every recorded day combined. |
+
+**Why the client computes them:** a projection's `view(state)` receives only state and **cannot see a clock**. "Today" and "this month" depend on the date at read time, so the Host publishes the **per-day ledger** and the client, which owns the clock, selects the ranges. The direct benefit is that the durable fold stays clock-free and therefore strictly replay-reproducible, while the periods stay calendar-correct.
+
+The boundaries are covered by tests: a month rollover (`2025-12-31` is not part of this month), a year rollover (the same month and day last year is not "today"), and a malformed day key — which contributes only to the all-time figure and can never inflate a period it does not belong to.
+
 ## Known costs
 
 Stated plainly:
@@ -84,7 +98,7 @@ The load-bearing test is `invokes the underlying adapter twice` in `tests/i-am-r
 ```
 src/index.ts        Host plugin: hooks llm/stream, sends duplicates, records llm/waste
 src/waste.ts        Pure folds: discarded usage into per-day totals
-src/projection.ts   wasteToday projection: publishes the daily ledger to the Web client
+src/projection.ts   wasteLedger projection: publishes the daily ledger to the Web client
 src/types.ts        The llm/waste event type (non-surface)
 src/client/         Browser half: the status bar
 ```

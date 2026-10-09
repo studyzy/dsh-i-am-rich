@@ -79,3 +79,85 @@ export function localDay(at: Date): string {
   const day = String(at.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
+
+/**
+ * The local calendar month of an instant, as the `YYYY-MM` prefix its days share.
+ * @param at - instant to place.
+ * @returns the local calendar month prefix.
+ */
+export function localMonth(at: Date): string {
+  const year = String(at.getFullYear()).padStart(4, '0')
+  const month = String(at.getMonth() + 1).padStart(2, '0')
+  return `${year}-${month}`
+}
+
+/** Discarded-token totals for the three periods the status bar reports. */
+export interface WastePeriods {
+  /** Discarded tokens on the reader's current local day. */
+  readonly today: number
+  /** Discarded tokens in the reader's current local calendar month. */
+  readonly month: number
+  /** Discarded tokens across every recorded day. */
+  readonly total: number
+  /** Calls behind {@link today}. */
+  readonly todayCalls: number
+  /** Calls behind {@link month}. */
+  readonly monthCalls: number
+  /** Calls behind {@link total}. */
+  readonly totalCalls: number
+  /** Discards the provider never priced, across every recorded day. */
+  readonly unpricedCalls: number
+}
+
+/**
+ * Fold a per-day ledger into the today, this-month, and all-time figures.
+ *
+ * The ledger publishes days and no periods, because a period depends on the
+ * reader's current date. Selecting the range here — against the caller's
+ * `now` — keeps the durable projection clock-free while still reporting
+ * calendar-correct periods.
+ *
+ * A day key that is not a well-formed `YYYY-MM-DD` still contributes to
+ * {@link WastePeriods.total}, but can match neither the day nor the month
+ * prefix, so malformed data can never inflate a period it does not belong to.
+ * @param days - day-keyed buckets from the `wasteLedger` projection.
+ * @param now - the reader's current instant, supplying today and this month.
+ * @returns discarded-token totals for each period.
+ */
+export function sumPeriods(days: Record<string, WasteTotals>, now: Date): WastePeriods {
+  const today = localDay(now)
+  const month = localMonth(now)
+  let todayTokens = 0
+  let monthTokens = 0
+  let totalTokens_ = 0
+  let todayCalls = 0
+  let monthCalls = 0
+  let totalCalls = 0
+  let unpricedCalls = 0
+
+  for (const [day, totals] of Object.entries(days)) {
+    const tokens = totalTokens(totals)
+    const calls = totals.pricedCalls
+    totalTokens_ += tokens
+    totalCalls += calls
+    unpricedCalls += totals.unpricedCalls
+    if (day.startsWith(month)) {
+      monthTokens += tokens
+      monthCalls += calls
+    }
+    if (day === today) {
+      todayTokens += tokens
+      todayCalls += calls
+    }
+  }
+
+  return {
+    today: todayTokens,
+    month: monthTokens,
+    total: totalTokens_,
+    todayCalls,
+    monthCalls,
+    totalCalls,
+    unpricedCalls,
+  }
+}

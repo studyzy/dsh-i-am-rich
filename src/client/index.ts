@@ -3,8 +3,9 @@
  *
  * It is the browser counterpart of `src/index.ts`. The Host half records each
  * discarded duplicate request as a durable `llm/waste` event and folds it into
- * the client-visible `wasteToday` projection; this module renders that value
- * into the shell's bottom bar.
+ * the client-visible `wasteLedger` projection; this module renders that value
+ * into the shell's bottom bar, selecting the today, this-month, and all-time
+ * periods against the reader's clock.
  *
  * Composition follows the client-plugin contract:
  *

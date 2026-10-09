@@ -1,11 +1,15 @@
 /**
- * The `wasteToday` projection: discarded usage folds into per-day buckets and
- * publishes the latest day's total, with the day stamped by the Host so replay
+ * The `wasteLedger` projection: discarded usage folds into per-day buckets and
+ * publishes the whole ledger, with the day stamped by the Host so replay
  * reproduces live totals without a clock.
+ *
+ * Period selection (today, this month, all time) is deliberately absent here —
+ * it belongs to the client that owns the clock. These cases assert the fold and
+ * the published days only.
  */
 
 import { describe, expect, it } from 'vitest'
-import { createWasteTodayProjection } from '../src/projection.ts'
+import { createWasteLedgerProjection } from '../src/projection.ts'
 import type { LlmWasteEventData, WasteId } from '../src/types.ts'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
@@ -27,7 +31,7 @@ function wasteEvent(day: string, overrides: Partial<LlmWasteEventData> = {}): Se
 /** An unrelated event the projection must ignore by reference. */
 const UNRELATED = { type: 'turn/start', data: { turn: 1 } } as unknown as SessionEvent
 
-const projection = createWasteTodayProjection()
+const projection = createWasteLedgerProjection()
 const header = undefined as never
 const inherited = 0 as never
 
@@ -39,7 +43,7 @@ function fold(events: readonly SessionEvent[]) {
   )
 }
 
-describe('wasteToday projection', () => {
+describe('wasteLedger projection', () => {
   it('starts empty', () => {
     expect(projection.init(header, inherited)).toEqual({ days: {} })
   })
@@ -72,33 +76,29 @@ describe('wasteToday projection', () => {
     expect(state.days['2026-01-06']?.inputTokens).toBe(200)
   })
 
-  it('reports the latest day and its token total', () => {
+  it('keeps days in different months separate', () => {
     const state = fold([
-      wasteEvent('2026-01-05', { usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 } }),
-      wasteEvent('2026-01-06', { usage: { inputTokens: 200, outputTokens: 2, totalTokens: 202 } }),
+      wasteEvent('2026-01-31', { usage: { inputTokens: 10, outputTokens: 0, totalTokens: 10 } }),
+      wasteEvent('2026-02-01', { usage: { inputTokens: 20, outputTokens: 0, totalTokens: 20 } }),
     ])
 
-    expect(projection.wire.view(state)).toEqual({
-      days: state.days,
-      latestDay: '2026-01-06',
-      latestTotal: 202,
-    })
+    expect(Object.keys(state.days).sort()).toEqual(['2026-01-31', '2026-02-01'])
+  })
+
+  it('publishes the whole ledger without pre-computed periods', () => {
+    const state = fold([wasteEvent('2026-01-05', {
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    })])
+
+    // Periods are the client's job; the wire view carries days and nothing else.
+    expect(projection.wire.view(state)).toEqual({ days: state.days })
   })
 
   it('counts an unpriced discard without claiming tokens', () => {
     const state = fold([wasteEvent('2026-01-05')])
-    const view = projection.wire.view(state)
 
     expect(state.days['2026-01-05']?.unpricedCalls).toBe(1)
-    expect(view.latestTotal).toBe(0)
-  })
-
-  it('reports an empty view before any discard', () => {
-    expect(projection.wire.view(projection.init(header, inherited))).toEqual({
-      days: {},
-      latestDay: undefined,
-      latestTotal: 0,
-    })
+    expect(state.days['2026-01-05']?.inputTokens).toBe(0)
   })
 
   it('does not mutate the state it folds into', () => {

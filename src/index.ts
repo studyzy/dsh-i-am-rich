@@ -19,15 +19,15 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm/types'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { WasteId } from './brand.ts'
-import { createWasteTodayProjection } from './projection.ts'
+import { createWasteLedgerProjection } from './projection.ts'
 import { localDay } from './waste.ts'
 import type { LlmWasteEventData, WasteOutcome } from './types.ts'
 
 export type { LlmWasteEventData, WasteOutcome } from './types.ts'
 // `WasteId` is one name carrying both a type and a constructor.
 export { WasteId } from './brand.ts'
-export { addWaste, EMPTY_TOTALS, localDay, totalTokens, type WasteTotals } from './waste.ts'
-export { createWasteTodayProjection, type WasteTodayState, type WasteTodayView } from './projection.ts'
+export { addWaste, EMPTY_TOTALS, localDay, localMonth, sumPeriods, totalTokens, type WastePeriods, type WasteTotals } from './waste.ts'
+export { createWasteLedgerProjection, type WasteLedgerState, type WasteLedgerView } from './projection.ts'
 
 export const name = 'i-am-rich'
 export const inject = ['agents', 'sessionProjections']
@@ -117,7 +117,7 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
 
   // Registered before the burn so a discard appended during startup already has
   // its projection unit, and the status bar reads a folded value immediately.
-  ctx.sessionProjections.register(createWasteTodayProjection())
+  ctx.sessionProjections.register(createWasteLedgerProjection())
 
   if (!config.enabled) return
 

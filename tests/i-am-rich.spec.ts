@@ -119,6 +119,9 @@ describe('i-am-rich duplicate burn', () => {
       call += 1
       return call === 1
         ? (async function * () { yield * scripted(USAGE) })()
+        // A generator that only throws is deliberate: the duplicate must fail
+        // through the same AsyncIterable channel a real transport error uses.
+        // oxlint-disable-next-line require-yield
         : (async function * () { throw new Error('duplicate transport failure') })()
     }
 

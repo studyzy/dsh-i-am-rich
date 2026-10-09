@@ -17,14 +17,10 @@
 /** A component the slot renderer can mount. */
 export type SlotComponent<P> = (props: P) => unknown
 
-/** The discarded-usage view this plugin's Host half publishes per session. */
-export interface WasteTodayView {
-  /** Every day the session recorded discarded usage on. */
+/** The discarded-usage ledger this plugin's Host half publishes per session. */
+export interface WasteLedgerView {
+  /** Every day the session recorded discarded usage on, keyed `YYYY-MM-DD`. */
   readonly days: Record<string, WasteTotals>
-  /** Discarded tokens on the most recent recorded day. */
-  readonly latestDay: string | undefined
-  /** Total discarded tokens on that day. */
-  readonly latestTotal: number
 }
 
 /** One day's discarded-token buckets, as published over the wire. */
