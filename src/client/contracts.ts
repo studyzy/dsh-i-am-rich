@@ -43,21 +43,42 @@ export interface SessionsState {
   readonly byId: Record<string, SessionLike | undefined>
 }
 
+/**
+ * The slot this bar registers into.
+ *
+ * `conversation.composer.dock` is the standing seat the shell renders directly
+ * below the composer, and it is `kind: 'list'`, so this entry sits alongside
+ * the other docks rather than displacing one. It is declared by
+ * `@deepseek-ai/dsh-client-ui-conversation`'s own `children` table.
+ *
+ * The name is spelled out here rather than imported: this package ships a
+ * Host-facing plugin, and a browser type package would drag the whole UI stack
+ * into every headless install that never renders the bar.
+ */
+export type WasteSlotName = 'conversation.composer.dock'
+
 /** The slot registration options this plugin passes. */
 export interface SlotRegistration {
-  readonly name: 'shell.bottom'
+  readonly name: WasteSlotName
   readonly locale: string
+  /** Stable entry id within the slot's list. */
+  readonly id: string
+  /** Sort position among the slot's entries. */
+  readonly order: number
 }
 
 /** The slots service members used by this plugin. */
 export interface SlotsService {
   /**
-   * Register after the slot's declaration exists.
+   * Run `contribute` once the named slot is declared, and again after every
+   * declaration epoch change. A slot that is never declared never runs it — so
+   * the name must be one the shell actually declares, or the contribution is
+   * dropped silently.
    * @param name - the slot to wait for.
    * @param contribute - registers the contribution once declared.
    * @returns the disposer.
    */
-  inject(name: string, contribute: () => unknown): () => void
+  inject(name: WasteSlotName, contribute: () => unknown): () => void
   /**
    * Contribute a component to a declared slot.
    * @param options - the registration options.
@@ -88,8 +109,8 @@ export interface SessionsHook {
   <T>(selector: (state: SessionsState) => T): T
 }
 
-/** Props the shell supplies to a `shell.bottom` contribution. */
-export interface ShellBottomProps {
+/** Props the shell supplies to a `conversation.composer.dock` contribution. */
+export interface WasteDockProps {
   /** Standing seat: the session store hook. */
   readonly useSessions: SessionsHook
   /** Standing seat: the active session id. */
