@@ -1,4 +1,18 @@
+# Dependencies (pnpm-lock.yaml IS committed; do not ignore it)
 node_modules/
+
+# Build output
 lib/
 *.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor and OS noise
 .DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
