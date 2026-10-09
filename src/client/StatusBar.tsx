@@ -10,7 +10,7 @@
 
 import type { CSSProperties } from 'react'
 import type { ShellBottomProps, WasteTodayView } from './contracts.ts'
-import type { RichPersonKey } from './locales.ts'
+import type { IAmRichKey } from './locales.ts'
 
 /** Props the shell composes for this contribution. */
 export type WasteStatusBarProps = ShellBottomProps
@@ -60,10 +60,10 @@ export function WasteStatusBar({ useSessions, sessionId, t }: WasteStatusBarProp
   if (view === undefined) return null
 
   const totals = view.latestDay === undefined ? undefined : view.days[view.latestDay]
-  const translate = t as (key: RichPersonKey, params?: Record<string, unknown>) => string
+  const translate = t as (key: IAmRichKey, params?: Record<string, unknown>) => string
 
   if (totals === undefined || view.latestTotal === 0) {
-    return <span style={BAR} data-rich-person-waste="empty">{translate('waste.none')}</span>
+    return <span style={BAR} data-i-am-rich-waste="empty">{translate('waste.none')}</span>
   }
 
   const tooltip = [
@@ -72,7 +72,7 @@ export function WasteStatusBar({ useSessions, sessionId, t }: WasteStatusBarProp
   ].join('\n')
 
   return (
-    <span style={BAR_ACTIVE} data-rich-person-waste="total" title={tooltip}>
+    <span style={BAR_ACTIVE} data-i-am-rich-waste="total" title={tooltip}>
       {translate('waste.today', { tokens: formatTokens(view.latestTotal) })}
     </span>
   )

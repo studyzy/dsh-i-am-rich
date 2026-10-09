@@ -1,3 +1,3 @@
 - insert:
-    - id: rich-person
-      name: '@deepseek-ai/dsh-rich-person'
+    - id: i-am-rich
+      name: '@deepseek-ai/dsh-i-am-rich'

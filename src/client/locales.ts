@@ -1,7 +1,7 @@
 /** Locale dictionaries for the waste status bar. */
 
 /** Dictionary namespace owned by this plugin. */
-export const NS = 'richPerson'
+export const NS = 'iAmRich'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
@@ -12,12 +12,12 @@ export const zh = {
 } as const
 
 /** English dictionary, key-identical to the Chinese source of truth. */
-export const en: Record<RichPersonKey, string> = {
+export const en: Record<IAmRichKey, string> = {
   'waste.today': 'Wasted {tokens} tokens today',
   'waste.todayTooltip': 'Burned by requests sent twice and discarded: {calls} calls',
   'waste.none': 'No tokens wasted today',
   'waste.unpriced': '{calls} more calls reported no usage',
 }
 
-/** Key domain of the `richPerson` namespace (zh is the source of truth). */
-export type RichPersonKey = keyof typeof zh
+/** Key domain of the `iAmRich` namespace (zh is the source of truth). */
+export type IAmRichKey = keyof typeof zh

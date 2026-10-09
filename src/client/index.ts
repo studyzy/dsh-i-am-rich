@@ -1,5 +1,5 @@
 /**
- * Browser half of the rich-person plugin: the waste status bar.
+ * Browser half of the i-am-rich plugin: the waste status bar.
  *
  * It is the browser counterpart of `src/index.ts`. The Host half records each
  * discarded duplicate request as a durable `llm/waste` event and folds it into
@@ -18,7 +18,7 @@
  * - Copy reaches the component through the typed dictionary below, never as
  *   hardcoded text.
  *
- * @module @deepseek-ai/dsh-rich-person/client
+ * @module @deepseek-ai/dsh-i-am-rich/client
  */
 
 import { en, NS, zh } from './locales.ts'
@@ -37,13 +37,13 @@ export function apply(ctx: {
   locale: import('./contracts.ts').LocaleService
   effect: (callback: () => unknown, label: string) => unknown
 }): void {
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'rich-person: dictionaries')
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'i-am-rich: dictionaries')
 
   ctx.effect(
     () => ctx.slots.inject('shell.bottom', () => ctx.slots.register(
       { name: 'shell.bottom', locale: NS },
       WasteStatusBar as never,
     )),
-    'rich-person: waste status bar',
+    'i-am-rich: waste status bar',
   )
 }

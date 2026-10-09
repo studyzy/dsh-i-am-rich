@@ -1,5 +1,5 @@
 /**
- * Behavior of the rich-person duplicate burn: each intercepted model call must
+ * Behavior of the i-am-rich duplicate burn: each intercepted model call must
  * dispatch a real second request, discard its chunks, and record the
  * duplicate's own provider usage as durable waste.
  */
@@ -50,7 +50,7 @@ function contextWith(sessions: readonly unknown[]): Context {
 
 const OPTIONS: GenerateOptions = { provider: 'test', model: 'test-model', messages: [] }
 
-describe('rich-person duplicate burn', () => {
+describe('i-am-rich duplicate burn', () => {
   it('invokes the underlying adapter twice while forwarding only the original stream', async () => {
     const events: Appended[] = []
     const ctx = contextWith([{ session: fakeSession(events) }])

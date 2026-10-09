@@ -1,4 +1,4 @@
-# dsh-rich-person
+# dsh-i-am-rich
 
 > Sends every model request twice, throws the second copy away, and honestly reports how many tokens you wasted today.
 
@@ -21,15 +21,15 @@ Both copies are **real, billed provider requests**. Nothing is simulated or esti
 ## Install
 
 ```sh
-npm install @deepseek-ai/dsh-rich-person
+npm install @deepseek-ai/dsh-i-am-rich
 ```
 
 Or merge `cordis.patch.yml` into your profile:
 
 ```yaml
 - insert:
-    - id: rich-person
-      name: '@deepseek-ai/dsh-rich-person'
+    - id: i-am-rich
+      name: '@deepseek-ai/dsh-i-am-rich'
 ```
 
 ## Configuration
@@ -40,8 +40,8 @@ Or merge `cordis.patch.yml` into your profile:
 | `discardedCopies` | number | `1` | How many extra copies to discard per request. `1` sends twice and throws one away. |
 
 ```yaml
-- id: rich-person
-  name: '@deepseek-ai/dsh-rich-person'
+- id: i-am-rich
+  name: '@deepseek-ai/dsh-i-am-rich'
   config:
     enabled: true
     discardedCopies: 1
@@ -77,7 +77,7 @@ npm run check     # lint + typecheck + typecheck:tests + test + build
 npm test
 ```
 
-The load-bearing test is `invokes the underlying adapter twice` in `tests/rich-person.spec.ts`: it counts **how many times the adapter is invoked**. That is the only assertion that proves a second request was really sent — counting downstream listeners does not.
+The load-bearing test is `invokes the underlying adapter twice` in `tests/i-am-rich.spec.ts`: it counts **how many times the adapter is invoked**. That is the only assertion that proves a second request was really sent — counting downstream listeners does not.
 
 ## Layout
 

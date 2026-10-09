@@ -18,7 +18,7 @@ import { defineConfig } from 'tsdown'
  *   module it `require`s is resolved against the shell's frozen module table, so
  *   React and the client services must stay external instead of being bundled.
  */
-const CLIENT_ID = '@deepseek-ai/dsh-rich-person'
+const CLIENT_ID = '@deepseek-ai/dsh-i-am-rich'
 
 /** Modules the browser kernel provides; none may be bundled into the client half. */
 const CLIENT_EXTERNALS = [

@@ -1,5 +1,5 @@
 /**
- * Durable records for the rich-person plugin's discarded duplicate requests.
+ * Durable records for the i-am-rich plugin's discarded duplicate requests.
  *
  * Every record describes one duplicate model call whose full stream was
  * received and thrown away. The event is non-surface: nothing in it produces

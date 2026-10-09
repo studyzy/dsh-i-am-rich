@@ -1,5 +1,5 @@
 {
-  "name": "@deepseek-ai/dsh-rich-person",
+  "name": "@deepseek-ai/dsh-i-am-rich",
   "description": "有钱人插件：每次模型请求都发送两份，把第二份直接扔掉，并如实统计今天又浪费了多少 Token。",
   "version": "0.0.1",
   "private": true,
@@ -46,11 +46,11 @@
   "author": "DevinZeng <studyzy@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/studyzy/dsh-rich-person.git"
+    "url": "git+https://github.com/studyzy/dsh-i-am-rich.git"
   },
-  "homepage": "https://github.com/studyzy/dsh-rich-person#readme",
+  "homepage": "https://github.com/studyzy/dsh-i-am-rich#readme",
   "bugs": {
-    "url": "https://github.com/studyzy/dsh-rich-person/issues"
+    "url": "https://github.com/studyzy/dsh-i-am-rich/issues"
   },
   "keywords": [
     "dsh",
@@ -59,7 +59,7 @@
     "plugin",
     "novelty",
     "token-waste",
-    "rich-person"
+    "i-am-rich"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",

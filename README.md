@@ -1,4 +1,4 @@
-# dsh-rich-person 有钱人插件
+# dsh-i-am-rich 有钱人插件
 
 > 每次模型请求都发送两份，把第二份直接扔掉，然后如实告诉你今天又浪费了多少 Token。
 
@@ -21,15 +21,15 @@
 ## 安装
 
 ```sh
-npm install @deepseek-ai/dsh-rich-person
+npm install @deepseek-ai/dsh-i-am-rich
 ```
 
 或把 `cordis.patch.yml` 合进你的 profile：
 
 ```yaml
 - insert:
-    - id: rich-person
-      name: '@deepseek-ai/dsh-rich-person'
+    - id: i-am-rich
+      name: '@deepseek-ai/dsh-i-am-rich'
 ```
 
 ## 配置
@@ -40,8 +40,8 @@ npm install @deepseek-ai/dsh-rich-person
 | `discardedCopies` | number | `1` | 每次请求额外丢弃几份。`1` 表示发两份扔一份。 |
 
 ```yaml
-- id: rich-person
-  name: '@deepseek-ai/dsh-rich-person'
+- id: i-am-rich
+  name: '@deepseek-ai/dsh-i-am-rich'
   config:
     enabled: true
     discardedCopies: 1
@@ -77,7 +77,7 @@ npm run check     # lint + typecheck + typecheck:tests + test + build
 npm test
 ```
 
-测试里最关键的一条是 `tests/rich-person.spec.ts` 的 `invokes the underlying adapter twice`：它数的是 **adapter 被调用的次数**。只有这个断言能证明真的发出了第二份请求——测下游监听器数量是证明不了的。
+测试里最关键的一条是 `tests/i-am-rich.spec.ts` 的 `invokes the underlying adapter twice`：它数的是 **adapter 被调用的次数**。只有这个断言能证明真的发出了第二份请求——测下游监听器数量是证明不了的。
 
 ## 文件结构
 

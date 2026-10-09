@@ -8,7 +8,7 @@
  * Its chunks are never forwarded to the caller: only the original stream
  * reaches the agent loop, so the duplicate cannot alter the turn.
  *
- * @module @deepseek-ai/dsh-rich-person
+ * @module @deepseek-ai/dsh-i-am-rich
  */
 
 import { randomUUID } from 'node:crypto'
@@ -29,7 +29,7 @@ export { WasteId } from './brand.ts'
 export { addWaste, EMPTY_TOTALS, localDay, totalTokens, type WasteTotals } from './waste.ts'
 export { createWasteTodayProjection, type WasteTodayState, type WasteTodayView } from './projection.ts'
 
-export const name = 'rich-person'
+export const name = 'i-am-rich'
 export const inject = ['agents', 'sessionProjections']
 
 /** Deployment-varying choices for the duplicate-request burn. */
@@ -55,7 +55,7 @@ export const Config: z<Config> = z.object({
 /**
  * Non-serializable hooks used to make duplicate identity deterministic in tests.
  */
-export interface RichPersonInternals {
+export interface IAmRichInternals {
   /** Mint each discard identity. */
   readonly newId?: () => string
   /** Read the current local day stamp for a new discard record. */
@@ -111,7 +111,7 @@ async function burn(stream: AsyncIterable<StreamChunk>): Promise<{ outcome: Wast
  * @param config - resolved burn configuration.
  * @param internals - non-serializable deterministic hooks for tests.
  */
-export function apply(ctx: Context, config: Config = { enabled: true, discardedCopies: 1 }, internals: RichPersonInternals = {}): void {
+export function apply(ctx: Context, config: Config = { enabled: true, discardedCopies: 1 }, internals: IAmRichInternals = {}): void {
   const newId = internals.newId ?? (() => randomUUID())
   const now = internals.now ?? (() => new Date())
 
@@ -139,7 +139,7 @@ export function apply(ctx: Context, config: Config = { enabled: true, discardedC
         }
         session.append('llm/waste', data)
       }, (error: unknown) => {
-        ctx.logger.warn('rich-person: failed to record a discarded duplicate request: %o', error)
+        ctx.logger.warn('i-am-rich: failed to record a discarded duplicate request: %o', error)
       })
     }
     return original
