@@ -4,6 +4,35 @@
 
 一个 DeepSeek Harness 插件。它的唯一功能就是**真的花掉两倍的钱**，并且**诚实地**把浪费掉的数字显示出来。
 
+## 设计灵感
+
+这个插件来自一个关于「有钱」的经典段子：
+
+> 等咱有了钱，喝豆浆吃油条。
+> 想蘸白糖蘸白糖，想蘸红糖蘸红糖。
+> 豆浆买两碗，喝一碗，倒一碗！
+> 油条买两根，吃一根，扔一根！
+
+段子的笑点不在「有钱」，而在**浪费被摆到明面上**——买两碗就是为了倒一碗，倒掉的那碗才是重点。
+
+`dsh-i-am-rich` 就是把这个段子原样搬进 LLM 调用里：
+
+| 段子 | 插件 |
+| --- | --- |
+| 豆浆买两碗 | 每次模型请求真的发两份 |
+| 喝一碗 | 第一份正常返回给 agent loop，是你真正在用的回复 |
+| **倒一碗** | **第二份完整收完，然后直接扔掉** |
+| 想蘸白糖蘸白糖，想蘸红糖蘸红糖 | `discardedCopies` 想扔几份扔几份 |
+| —— | 状态条如实显示「倒掉了多少」，今日 / 本月 / 累计 |
+| —— | `enabled: false`：今天不想摆阔，豆浆只买一碗 |
+
+两处刻意的对应：
+
+- **倒掉的那碗是真的倒了。** 第二份请求真的通过网络发出、真的被 provider 计费、内容真的被丢弃。不模拟、不估算、不假装——段子的笑点建立在「真花了钱」之上，插件也必须是真花钱。
+- **倒掉的那碗要数清楚。** 段子里没人统计倒了多少，这个插件偏要统计，而且只用 provider 自己报告的 `usage`，一个 token 都不编。**这是整个插件唯一严肃的地方**：既然钱真的花了，账就得是真的。
+
+换句话说：**行为是段子，账本是账本。** 花两倍的钱是玩笑，把这两倍的钱如实记下来不是。
+
 ## 它做什么
 
 ```
@@ -20,17 +49,32 @@
 
 ## 安装
 
+> 这个包目前是 `private: true`，**尚未发布到 npm**。从源码安装：
+
 ```sh
-npm install @deepseek-ai/dsh-i-am-rich
+git clone https://github.com/studyzy/dsh-i-am-rich.git
+cd dsh-i-am-rich
+pnpm install
+pnpm run build
 ```
 
-或把 `cordis.patch.yml` 合进你的 profile：
+然后把它装进你的 DSH profile。`dsh plugin` 是 pnpm 的透传，所以用 `add` 加一个 `link:` 依赖指向仓库：
+
+```sh
+dsh plugin --profile <你的 profile> add link:/path/to/dsh-i-am-rich
+```
+
+注意：内置的 `desktop` profile 由 Electron 应用独占管理，`dsh plugin --profile desktop ...` 会被拒绝（`profile "desktop" is managed exclusively by the Electron application`）。要装进 `desktop`，请用应用自带的 `runtime/cli/bin/dsh`，或直接编辑 `~/.dsh/profiles/desktop/package.json` 并跑一次收敛。
+
+最后把 `cordis.patch.yml` 合进你的 profile：
 
 ```yaml
 - insert:
     - id: i-am-rich
       name: '@deepseek-ai/dsh-i-am-rich'
 ```
+
+`id` 必须是 `i-am-rich`：插件改名后运行时 id 变了，旧配置里的 `rich-person` 不会再匹配，禁用开关之类的配置会静默失效。
 
 ## 配置
 
@@ -71,6 +115,26 @@ npm install @deepseek-ai/dsh-i-am-rich
 
 边界行为都有测试覆盖：跨月（`2025-12-31` 不计入本月）、跨年（去年同月同日不算「今日」）、以及格式非法的日期键——非法键只计入「累计」，不会污染任何区间。
 
+### 状态条常驻显示
+
+状态条**从插件挂载的那一刻起就显示**，还没有任何浪费记录时显示三个 `0`。
+
+这是刻意的：状态条是这个插件**唯一**可见的证据，而 `shell.bottom` 对空内容**不预留任何空间**。如果「没有记录就不渲染」，一个装好的插件和一个加载失败的插件在界面上**完全一样**——这正是早期版本让人以为「装了没反应」的原因。空状态用 `data-i-am-rich-waste="empty"` 标记，数字仍然是 `0` 而不是隐藏。
+
+## 请求归属
+
+`llm/waste` 记录必须挂到**发出这次请求的那个 session** 上。归属按两级判定：
+
+1. **继承的 initiator**（`ctx.agents.currentInitiator()`）——发起这次调用的 agent 的驱动链。这是精确的，也是**多 agent 部署下唯一正确的来源**：有队友 session、子 agent、或并发的会话时，`agents.list()` 会返回不止一个。
+2. **唯一的活跃 agent**——在 initiator 边界之外、且恰好只有一个 agent 时使用。
+
+两个关键点，都有回归测试锁定：
+
+- **归属在「请求发出时」同步解析**，而不是等重复请求排空之后再解析。重复请求的生命周期比原请求长；如果期间有兄弟 agent 注册进来，事后解析就会变成「有歧义」，于是一笔**真实花掉的钱**被静默丢弃。
+- **多 agent 不再是「有歧义」。** 旧版本在 `agents.list().length !== 1` 时直接不记录，这让多 agent 部署下**每一次都记不上账**。
+
+只有在既没有 initiator、活跃 agent 又不是恰好一个时才真正放弃记录——此时 burn 照做，但不冒充归属。
+
 ## 已知代价
 
 诚实地说清楚这个插件的代价：
@@ -86,21 +150,30 @@ npm install @deepseek-ai/dsh-i-am-rich
 ## 开发
 
 ```sh
-npm install
-npm run check     # lint + typecheck + typecheck:tests + test + build
-npm test
+pnpm install
+pnpm run check     # lint + typecheck + typecheck:tests + test + build
+pnpm test
 ```
 
 测试里最关键的一条是 `tests/i-am-rich.spec.ts` 的 `invokes the underlying adapter twice`：它数的是 **adapter 被调用的次数**。只有这个断言能证明真的发出了第二份请求——测下游监听器数量是证明不了的。
 
+完整的开发环境与约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)，版本变更见 [CHANGELOG.md](./CHANGELOG.md)。
+
 ## 文件结构
 
 ```
-src/index.ts        Host 插件：挂 llm/stream，发重复请求，记录 llm/waste
-src/waste.ts        纯函数：把丢弃用量折叠成每天的总数
-src/projection.ts   wasteLedger 投影：把每天的账本发布给 Web 客户端
-src/types.ts        llm/waste 事件类型（non-surface）
-src/client/         浏览器半边：状态条
+src/index.ts               Host 插件：挂 llm/stream，发重复请求，记录 llm/waste
+src/waste.ts               纯函数：把丢弃用量折叠成每天的总数与三个口径
+src/projection.ts          wasteLedger 投影：把每天的账本发布给 Web 客户端
+src/types.ts               llm/waste 事件类型（non-surface）
+src/brand.ts               WasteId 名义化包装
+src/client/index.ts        浏览器半边入口：注册 shell.bottom 槽位与字典
+src/client/StatusBar.tsx   状态条组件
+src/client/locales.ts      zh（真值源）/ en 字典
+src/client/contracts.ts    刻意收窄的浏览器内核类型面
+tests/                     4 个 spec，共 40 个用例
+cordis.patch.yml           插入插件行的 profile patch
+tsdown.config.ts           双产物构建：lib/index.js（ESM，Node）+ lib/client.js（CJS，浏览器）
 ```
 
 ## License
