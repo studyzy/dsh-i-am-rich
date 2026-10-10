@@ -13,7 +13,7 @@
  * browser through one exact GET route on the shared `/api` channel (see
  * `ledger-server.ts`). The session log is never touched.
  *
- * @module @deepseek-ai/dsh-i-am-rich
+ * @module @studyzy/dsh-i-am-rich
  */
 
 import { randomUUID } from 'node:crypto'

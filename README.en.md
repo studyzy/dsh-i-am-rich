@@ -75,7 +75,7 @@ Finally, merge `cordis.patch.yml` into your profile:
 ```yaml
 - insert:
     - id: i-am-rich
-      name: '@deepseek-ai/dsh-i-am-rich'
+      name: '@studyzy/dsh-i-am-rich'
 ```
 
 The `id` must be `i-am-rich`: the runtime id changed with the rename, so a `rich-person` entry in an older config no longer matches and settings such as the disable switch silently stop taking effect.
@@ -89,7 +89,7 @@ The `id` must be `i-am-rich`: the runtime id changed with the rename, so a `rich
 
 ```yaml
 - id: i-am-rich
-  name: '@deepseek-ai/dsh-i-am-rich'
+  name: '@studyzy/dsh-i-am-rich'
   config:
     enabled: true
     discardedCopies: 1

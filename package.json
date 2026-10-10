@@ -1,7 +1,7 @@
 {
-  "name": "@deepseek-ai/dsh-i-am-rich",
+  "name": "@studyzy/dsh-i-am-rich",
   "description": "有钱人插件：每次模型请求都发送两份，把第二份直接扔掉，并如实统计今天又浪费了多少 Token。",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.7.0",

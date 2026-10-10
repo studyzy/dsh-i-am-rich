@@ -28,7 +28,7 @@
  * showed nothing — indistinguishable from a plugin that failed to load. The
  * name below is transcribed from `ui-sidebar`'s own `children` table.
  *
- * @module @deepseek-ai/dsh-i-am-rich/client
+ * @module @studyzy/dsh-i-am-rich/client
  */
 
 import { en, NS, zh } from './locales.ts'

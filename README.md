@@ -73,7 +73,7 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-i-am-rich
 ```yaml
 - insert:
     - id: i-am-rich
-      name: '@deepseek-ai/dsh-i-am-rich'
+      name: '@studyzy/dsh-i-am-rich'
 ```
 
 `id` 必须是 `i-am-rich`：插件改名后运行时 id 变了，旧配置里的 `rich-person` 不会再匹配，禁用开关之类的配置会静默失效。
@@ -87,7 +87,7 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-i-am-rich
 
 ```yaml
 - id: i-am-rich
-  name: '@deepseek-ai/dsh-i-am-rich'
+  name: '@studyzy/dsh-i-am-rich'
   config:
     enabled: true
     discardedCopies: 1

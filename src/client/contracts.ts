@@ -11,7 +11,7 @@
  * under-declaring keeps the code coupled to the contract it relies on rather
  * than to a released version of it.
  *
- * @module @deepseek-ai/dsh-i-am-rich/client/contracts
+ * @module @studyzy/dsh-i-am-rich/client/contracts
  */
 
 /** A component the slot renderer can mount. */
