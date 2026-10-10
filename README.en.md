@@ -1,5 +1,9 @@
 # dsh-i-am-rich
 
+[![npm version](https://img.shields.io/npm/v/@studyzy/dsh-i-am-rich.svg)](https://www.npmjs.com/package/@studyzy/dsh-i-am-rich)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node](https://img.shields.io/node/v/@studyzy/dsh-i-am-rich.svg)](https://www.npmjs.com/package/@studyzy/dsh-i-am-rich)
+
 > Sends every model request twice, throws the second copy away, and honestly reports how many tokens you wasted today, this month, and in total.
 
 A DeepSeek Harness plugin whose only purpose is to **genuinely spend twice as much money** and then **honestly** show you the waste.
@@ -53,7 +57,13 @@ The discarded usage is recorded in **the plugin's own ledger directory** (`~/.ds
 
 ## Install
 
-> This package is currently `private: true` and is **not published to npm**. Install it from source:
+Published to npm — install it directly:
+
+```sh
+dsh plugin --profile <your-profile> add @studyzy/dsh-i-am-rich
+```
+
+Or install from source:
 
 ```sh
 git clone https://github.com/studyzy/dsh-i-am-rich.git
@@ -62,7 +72,7 @@ pnpm install
 pnpm run build
 ```
 
-Then install it into your DSH profile. `dsh plugin` is a pnpm passthrough, so use `add` with a `link:` dependency pointing at the checkout:
+Then install it into your DSH profile. `dsh plugin` is a pnpm passthrough, so when installing from source use `add` with a `link:` dependency pointing at the checkout:
 
 ```sh
 dsh plugin --profile <your-profile> add link:/path/to/dsh-i-am-rich

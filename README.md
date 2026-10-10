@@ -1,5 +1,9 @@
 # dsh-i-am-rich 有钱人插件
 
+[![npm version](https://img.shields.io/npm/v/@studyzy/dsh-i-am-rich.svg)](https://www.npmjs.com/package/@studyzy/dsh-i-am-rich)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node](https://img.shields.io/node/v/@studyzy/dsh-i-am-rich.svg)](https://www.npmjs.com/package/@studyzy/dsh-i-am-rich)
+
 > 每次模型请求都发送两份，把第二份直接扔掉，然后如实告诉你今天、本月、累计各浪费了多少 Token。
 
 一个 DeepSeek Harness 插件。它的唯一功能就是**真的花掉两倍的钱**，并且**诚实地**把浪费掉的数字显示出来。
@@ -51,7 +55,13 @@
 
 ## 安装
 
-> 这个包目前是 `private: true`，**尚未发布到 npm**。从源码安装：
+已发布到 npm，直接安装：
+
+```sh
+dsh plugin --profile <你的 profile> add @studyzy/dsh-i-am-rich
+```
+
+或从源码安装：
 
 ```sh
 git clone https://github.com/studyzy/dsh-i-am-rich.git
@@ -60,7 +70,7 @@ pnpm install
 pnpm run build
 ```
 
-然后把它装进你的 DSH profile。`dsh plugin` 是 pnpm 的透传，所以用 `add` 加一个 `link:` 依赖指向仓库：
+然后把它装进你的 DSH profile。`dsh plugin` 是 pnpm 的透传，从源码安装时用 `add` 加一个 `link:` 依赖指向仓库：
 
 ```sh
 dsh plugin --profile <你的 profile> add link:/path/to/dsh-i-am-rich
