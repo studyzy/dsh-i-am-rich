@@ -88,14 +88,12 @@ export function createWasteLedgerRoute(root: string): WasteLedgerFetchRoute {
  * @returns the route's disposer, or `undefined` when there is no connection.
  */
 export function registerWasteLedgerRoute(ctx: Context, root: string): (() => Promise<void>) | undefined {
-  let connection: WasteLedgerConnection | undefined
-  try {
-    connection = ctx.connection
-  } catch {
-    // Reading a service the harness never provided throws on some cordis
-    // versions; either way, absence is the supported no-Web-client shape.
-    connection = undefined
-  }
+  // `connection` is declared in this plugin's `inject`, so cordis has already
+  // resolved it by the time `apply` runs and this read cannot throw. A missing
+  // service is therefore a composition error worth surfacing, not something to
+  // swallow: masking it once hid an unregistered route behind a perfectly
+  // healthy ledger, and the status bar showed zero forever.
+  const connection: WasteLedgerConnection | undefined = ctx.connection
   if (connection === undefined) {
     ctx.logger.warn('i-am-rich: no connection service, so the waste status bar has no route to poll; burning and recording continue.')
     return undefined

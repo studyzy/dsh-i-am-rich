@@ -88,6 +88,31 @@ Removed），正文用中文书写，与仓库的提交信息风格保持一致�
 
 ### Fixed
 
+- **状态条永远显示 0：路由因缺少 `inject` 声明而从未注册。**
+  这是「账本文件明明在长大，状态条却一直是 `今日浪费 0`」的**根因**。
+  cordis 在一个**已激活**的插件 fiber 上读取一个从未声明 `inject` 的服务，
+  行为是**抛异常**（`cannot get property "connection" without inject`），
+  而不是返回 `undefined`。`registerWasteLedgerRoute` 当时用 `try/catch`
+  把这个异常当成「宿主没有 Web 客户端」的受支持降级形态吞掉了，
+  于是 `/api/i-am-rich/waste` **根本没注册**，而 Host 半边的重复请求与
+  账本写入一切正常。
+  两种情况的界面表现完全一样——状态条一个数字都不涨——所以这个 bug 长期静默，
+  排查时一度被误判为客户端缓存陈旧或取数失败。
+  修复为显式声明依赖：
+
+  ```ts
+  export const inject = ['connection']
+  ```
+
+  这同时解决两件事：服务读取变为合法操作，且 cordis 会等 `connection`
+  就绪后才调用 `apply`，消除了插件 `insert` 位置带来的启动时序竞争。
+  同时**移除那个吞异常的 `catch`**：它把「配置错误」伪装成「正常降级」，
+  正是让根因难以定位的原因；真正缺失的服务仍走同一条告警降级路径。
+  回归由 `tests/ledger-server.spec.ts` 新增的两条用例锁住：一条用真实
+  cordis fiber 复现 `without inject` 异常并断言路由确实抵达
+  `connection.fetch.register`，另一条断言 headless（确实没有 connection）
+  时仍返回 `undefined` 并保持降级。
+
 - **写坏整个会话日志：`llm/waste` 是未注册事件，且没有 `ignorable` 标记。**
   这是「重启 dsh desktop 后某条历史 Session 打不开」的**根因**，报错为
   `contains event type "llm/waste" (seq 707) unknown to this harness and not

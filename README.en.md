@@ -207,6 +207,22 @@ Recording no longer depends on any harness session-logging API. The host must pr
 - a writable user directory (`DSH_HOME` or `~/.dsh`, created automatically when absent);
 - the Web UI's `connection` service (which carries the `/api` route). In a headless environment without it, the plugin **still sends duplicates and still writes ledger files**; only the status bar has nothing to poll, and the condition is warned about once.
 
+`connection` is **declared in `inject`**, not read directly:
+
+```ts
+export const inject = ['connection']
+```
+
+Getting this wrong once cost the status bar: it showed `0` forever. On an **activated** plugin fiber, cordis **throws** when a service that was never injected is read
+(`cannot get property "connection" without inject`) rather than returning `undefined`.
+The old code caught that throw and treated it as "this host has no Web client" — so the `/api/i-am-rich/waste` route was never registered
+while the ledger file kept being written normally. Both situations look identical in the UI (the bar simply never moves), which is why the bug stayed silent
+and was first misdiagnosed as a stale client cache or a failed fetch.
+
+Declaring `inject` fixes two things at once: the read becomes legal, and cordis waits for `connection` before calling `apply`,
+removing the startup-order race created by the plugin's `insert` position. The regression is pinned by `tests/ledger-server.spec.ts`,
+which reproduces the `without inject` throw on a real cordis fiber and asserts the route actually reaches `connection.fetch.register`.
+
 ## Why the bar shows only one copy's worth
 
 With `discardedCopies: 2` three requests are sent (one real, two discarded); the status bar counts only **the two discarded ones**. It reports waste, not throughput — tokens you actually used are not waste.

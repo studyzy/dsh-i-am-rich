@@ -104,3 +104,64 @@ describe('createWasteLedgerRoute', () => {
     await expect(route.fetch(new Request(`http://host${WASTE_LEDGER_PATH}`))).rejects.toThrow()
   })
 })
+
+describe('registerWasteLedgerRoute', () => {
+  it('declares the connection service so the route is registered, not skipped', async () => {
+    // The regression this pins: on a live (activated) plugin fiber, cordis
+    // throws `cannot get property "connection" without inject` for a bare
+    // `ctx.connection` read. The registration used to catch that throw and
+    // report "no Web client", which is indistinguishable from the supported
+    // headless shape — so the Desktop app burned and recorded perfectly while
+    // the status bar stayed pinned at zero, because the route the client polls
+    // was never registered. Declaring `inject` is what makes the read legal.
+    const { Context } = await import('@deepseek-ai/cordis')
+    const { inject } = await import('../src/index.ts')
+    const { registerWasteLedgerRoute } = await import('../src/ledger-server.ts')
+
+    expect(inject).toContain('connection')
+
+    // An activated fiber without the injection really does throw; this is the
+    // exact failure the old `catch` swallowed. Activation is asynchronous, so
+    // the fiber is awaited before the probe's result is read.
+    const root = new Context()
+    let threw: string | undefined
+    await root.plugin({
+      name: 'probe-without-inject',
+      apply(ctx: { connection?: unknown }) {
+        try {
+          void ctx.connection
+        } catch (error) {
+          threw = (error as Error).message
+        }
+      },
+    } as never)
+    expect(threw).toContain('without inject')
+
+    // With the service provided, the route reaches `connection.fetch.register`
+    // exactly once and returns a disposer.
+    const registered: { path: string }[] = []
+    const ctx = new Context()
+    ctx.provide('connection', {
+      fetch: {
+        register: (route: { path: string }) => {
+          registered.push(route)
+          return async () => {}
+        },
+      },
+    })
+    const disposer = registerWasteLedgerRoute(ctx as never, await tempRoot())
+
+    expect(typeof disposer).toBe('function')
+    expect(registered.map(route => route.path)).toEqual([WASTE_LEDGER_PATH])
+  })
+
+  it('reports a genuinely absent connection instead of throwing', async () => {
+    // The headless shape stays supported: no Web client means no route, and
+    // the burn plus the ledger must continue regardless.
+    const { Context } = await import('@deepseek-ai/cordis')
+    const { registerWasteLedgerRoute } = await import('../src/ledger-server.ts')
+    const ctx = new Context()
+
+    expect(registerWasteLedgerRoute(ctx as never, await tempRoot())).toBeUndefined()
+  })
+})

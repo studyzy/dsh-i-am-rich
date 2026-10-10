@@ -38,6 +38,25 @@ export { addWaste, EMPTY_TOTALS, localDay, localMonth, sumPeriods, toMagnitude, 
 
 export const name = 'i-am-rich'
 
+/**
+ * Services this plugin must have before {@link apply} runs.
+ *
+ * `connection` is declared rather than merely read, because cordis refuses a
+ * bare `ctx.connection` property access on a context that never injected it:
+ * the getter throws `cannot get property "connection" without inject`. The
+ * route registration used to swallow that throw as "this harness has no Web
+ * client", which is indistinguishable from the real no-Web-client shape — so
+ * on the Desktop app the ledger was written and burned correctly while the
+ * status bar stayed pinned at zero, because the route was never registered.
+ *
+ * Declaring it also makes cordis hold `apply` until `connection` is provided,
+ * which removes the startup-order race the same code was silently losing.
+ *
+ * Optional in the type sense: a headless harness without the Web client never
+ * provides it, and cordis simply never activates this plugin there.
+ */
+export const inject = ['connection']
+
 /** Deployment-varying choices for the duplicate-request burn. */
 export interface Config {
   /**

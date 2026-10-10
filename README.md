@@ -204,6 +204,22 @@ $DSH_HOME/i-am-rich/waste-YYYY-MM.jsonl      # DSH_HOME 缺省为 ~/.dsh
 - 可写的用户目录（`DSH_HOME` 或 `~/.dsh`，不存在时自动创建）；
 - Web UI 的 `connection` 服务（注册 `/api` 路由）。headless 环境没有它时，插件**照常发重复请求、照常写账本文件**，只是状态条没有数据可拉，并告警一次。
 
+`connection` 是**声明在 `inject` 里**的，不是直接读取的：
+
+```ts
+export const inject = ['connection']
+```
+
+这一点曾经写错，代价是状态条永远显示 0。cordis 在一个**已激活**的插件 fiber 上读取没有声明 `inject` 的服务会**抛异常**
+（`cannot get property "connection" without inject`），而不是返回 `undefined`。
+当时的代码用 `try/catch` 把这个异常当成「宿主没有 Web 客户端」吞掉了——于是 `/api/i-am-rich/waste` 这条路由根本没注册，
+可账本文件却被正常写入。两种情况的界面表现完全一样（状态条一个数字都不涨），所以这个 bug 静默了很久，
+排查时一度误判为「客户端缓存」或「取数失败」。
+
+声明 `inject` 同时解决两件事：读取变成合法操作，且 cordis 会等 `connection` 就绪后才调用 `apply`，
+从而消除插件 `insert` 位置带来的启动时序竞争。回归由 `tests/ledger-server.spec.ts` 锁住，
+它用一个真实的 cordis fiber 复现那条 `without inject` 异常，并断言路由确实抵达 `connection.fetch.register`。
+
 ## 为什么状态条只显示一份
 
 `discardedCopies: 2` 时会发三份（一份真的 + 两份扔的），状态条只统计**被扔掉的那两份**。它统计的是「浪费」，不是「总量」——用掉的 Token 不算浪费。

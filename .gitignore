@@ -1,6 +1,10 @@
 # Dependencies (pnpm-lock.yaml IS committed; do not ignore it)
 node_modules/
 
+# Machine-local pnpm content store: caches packages for this checkout only,
+# never a source of truth another machine needs.
+.pnpm-store/
+
 # Build output
 lib/
 *.tsbuildinfo
