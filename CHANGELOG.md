@@ -1,6 +1,6 @@
 # Changelog
 
-本文件记录 `@deepseek-ai/dsh-i-am-rich` 的所有重要变更。
+本文件记录 `@studyzy/dsh-i-am-rich` 的所有重要变更。
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
@@ -387,7 +387,7 @@ Removed），正文用中文书写，与仓库的提交信息风格保持一致�
 
   | 项目 | 旧 | 新 |
   | --- | --- | --- |
-  | npm 包 | `@deepseek-ai/dsh-rich-person` | `@deepseek-ai/dsh-i-am-rich` |
+  | npm 包 | `dsh-rich-person` | `dsh-i-am-rich` |
   | 目录 | `dsh-rich-person` | `dsh-i-am-rich` |
   | 插件 id | `rich-person` | `i-am-rich` |
   | locale | `richPerson` | `iAmRich` |
@@ -400,8 +400,13 @@ Removed），正文用中文书写，与仓库的提交信息风格保持一致�
   ```yaml
   - insert:
       - id: i-am-rich   # 旧值：rich-person
-        name: '@deepseek-ai/dsh-i-am-rich'
+        name: '@studyzy/dsh-i-am-rich'
   ```
+
+  包名此前一度带 `@deepseek-ai/` 前缀（那是本仓库的起始 scope，从未发布到该
+  scope 下）；现统一为 **`@studyzy/dsh-i-am-rich`**，与 `package.json`、
+  `tsdown.config.ts` 的 `CLIENT_ID`、`cordis.patch.yml` 三者一致。
+  只改 scope、不改插件 id，因此已有 profile 无需改动。
 
 <!-- 链接引用 -->
 [Unreleased]: https://github.com/studyzy/dsh-i-am-rich/compare/v0.0.1...HEAD

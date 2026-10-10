@@ -4,7 +4,7 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 ## What this is
 
-`@deepseek-ai/dsh-i-am-rich` — a DSH (DeepSeek Harness) novelty plugin. It duplicates every model request, throws the duplicate away, and honestly reports the wasted tokens in a Web status bar. The duplicate is a real, billed provider call; the accounting uses only provider-reported `usage` (no estimation, no invention). "行为是段子，账本是账本。"
+`@studyzy/dsh-i-am-rich` — a DSH (DeepSeek Harness) novelty plugin. It duplicates every model request, throws the duplicate away, and honestly reports the wasted tokens in a Web status bar. The duplicate is a real, billed provider call; the accounting uses only provider-reported `usage` (no estimation, no invention). "行为是段子，账本是账本。"
 
 The DSH agent source lives at `../../deepseek-harness/` — consult it when questions touch harness internals (cordis, llm waterfall, session logs, slots, projections).
 

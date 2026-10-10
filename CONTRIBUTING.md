@@ -2,7 +2,7 @@
 
 > Contributing guide (Chinese). 本文档以中文为准。
 
-感谢你有兴趣为 `@deepseek-ai/dsh-i-am-rich` 做贡献。这是一个 DeepSeek Harness
+感谢你有兴趣为 `@studyzy/dsh-i-am-rich` 做贡献。这是一个 DeepSeek Harness
 的恶搞（novelty）插件，它的唯一功能就是**真的花掉两倍的钱**，然后**诚实地**
 把浪费掉的数字显示出来。请先读完这份指南再动手。
 

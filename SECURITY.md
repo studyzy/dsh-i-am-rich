@@ -2,7 +2,7 @@
 
 ## Intended double spend is not a vulnerability
 
-`@deepseek-ai/dsh-i-am-rich` is a novelty plugin whose **entire purpose** is to
+`@studyzy/dsh-i-am-rich` is a novelty plugin whose **entire purpose** is to
 deliberately send a second, fully-billed provider request for every model call
 and then throw the response away.
 

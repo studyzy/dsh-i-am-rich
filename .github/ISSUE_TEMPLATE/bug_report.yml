@@ -54,7 +54,7 @@ body:
       render: yaml
       placeholder: |
         - id: i-am-rich
-          name: '@deepseek-ai/dsh-i-am-rich'
+          name: '@studyzy/dsh-i-am-rich'
           config:
             enabled: true
             discardedCopies: 1
@@ -93,7 +93,7 @@ body:
     id: plugin-version
     attributes:
       label: 插件版本
-      description: '`@deepseek-ai/dsh-i-am-rich` 的版本号（见 package.json 或 lockfile）。'
+      description: '`@studyzy/dsh-i-am-rich` 的版本号（见 package.json 或 lockfile）。'
       placeholder: 0.0.1
     validations:
       required: true
@@ -112,7 +112,7 @@ body:
     attributes:
       label: 安装方式
       options:
-        - npm（npm install @deepseek-ai/dsh-i-am-rich）
+        - npm（npm install @studyzy/dsh-i-am-rich）
         - '本地 link / 工作区（file: 或 workspace:）'
         - 直接合入 cordis.patch.yml
         - 其他（请在补充说明里写清）
