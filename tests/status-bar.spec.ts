@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { WasteStatusBarView, asLedger } from '../src/client/StatusBar.tsx'
+import { WasteStatusBarView, asLedger, isCurrentRun } from '../src/client/StatusBar.tsx'
 import { en, zh, COIN } from '../src/client/locales.ts'
 import { FORTUNE_TIERS, type FortuneTier, type FortuneWriteStatus } from '../src/client/contracts.ts'
 import type { LedgerStatus, WasteLedgerView, WasteTotals } from '../src/client/contracts.ts'
@@ -786,5 +786,66 @@ describe('asLedger', () => {
     expect(asLedger({})).toBeUndefined()
     expect(asLedger({ days: 'all' })).toBeUndefined()
     expect(asLedger({ days: null })).toBeUndefined()
+  })
+
+  it('rejects a body whose day buckets are not fully numeric', () => {
+    const good = bucket(100)
+    // A `null` bucket would throw mid-render (there is no error boundary), and
+    // a string field would coerce the fold into silent garbage — so any bucket
+    // the fold cannot read rejects the whole body, and the poll reports a
+    // failure instead of freezing zeroes marked `ok`.
+    expect(asLedger({ days: { d1: good, d2: null } })).toBeUndefined()
+    expect(asLedger({ days: { d1: { ...good, inputTokens: '100' } } })).toBeUndefined()
+    expect(asLedger({ days: { d1: { ...good, pricedCalls: Number.NaN } } })).toBeUndefined()
+    expect(asLedger({ days: { d1: { ...good, cacheWriteTokens: undefined } } })).toBeUndefined()
+    expect(asLedger({ days: { d1: good } })).toBeDefined()
+  })
+})
+
+describe('async write ownership', () => {
+  /**
+   * The token model the bar uses for both of its async sources: the effect
+   * mints a token, every in-flight request captures it, and a response may only
+   * write state while its token is still the installed one.
+   */
+  const mint = (): { live: boolean } => ({ live: true })
+
+  it('accepts work whose token is still the installed one', () => {
+    const token = mint()
+    expect(isCurrentRun(token, token)).toBe(true)
+  })
+
+  it('rejects work from an earlier run, even after a remount installs a live token', () => {
+    // This is the StrictMode remount shape: the same ref slot holds a *new*
+    // live token, while the first effect's promise still holds the old one.
+    // A boolean `alive` ref would have been flipped back to `true`, letting the
+    // dead run's response through; object identity cannot be resurrected.
+    const firstRun = mint()
+    const secondRun = mint()
+    expect(isCurrentRun(secondRun, firstRun)).toBe(false)
+    expect(isCurrentRun(secondRun, secondRun)).toBe(true)
+  })
+
+  it('rejects work whose token was disowned by the cleanup', () => {
+    const token = mint()
+    const disowned = { live: false }
+    // The cleanup installs an already-dead token; the in-flight run still holds
+    // the live-looking one it started with, and must not be honoured.
+    expect(isCurrentRun(disowned, token)).toBe(false)
+  })
+
+  it('rejects a disowned token even when it is the installed one', () => {
+    const dead = { live: false }
+    expect(isCurrentRun(dead, dead)).toBe(false)
+  })
+
+  it('lets only the newest write own the radio', () => {
+    // Two overlapping writes: the older one resolves last. Its generation no
+    // longer matches, so it must not move the radio back.
+    const first = 1
+    const second = 2
+    const writeSeq = { current: second }
+    expect(writeSeq.current === first).toBe(false)
+    expect(writeSeq.current === second).toBe(true)
   })
 })

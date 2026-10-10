@@ -193,6 +193,19 @@ describe('period totals', () => {
     expect(periods.month).toBe(100)
     expect(periods.total).toBe(1000)
   })
+
+  it('does not let a key sharing the month prefix inflate the month', () => {
+    // Prefix matching alone would count `2026-100` and a full ISO timestamp
+    // toward the month; only a full-length `YYYY-MM-DD` key belongs there.
+    const periods = sumPeriods({
+      '2026-01-15': bucket(100),
+      '2026-100': bucket(7),
+      '2026-01-15T00:00:00Z': bucket(1000),
+    }, NOW)
+
+    expect(periods.month).toBe(100)
+    expect(periods.total).toBe(1107)
+  })
 })
 describe('toMagnitude', () => {
   it('leaves a small count unscaled', () => {

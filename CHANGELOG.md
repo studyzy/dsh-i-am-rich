@@ -88,6 +88,119 @@ Removed），正文用中文书写，与仓库的提交信息风格保持一致�
 
 ### Fixed
 
+- **账本文件句柄在并发写入时泄漏，可致命终止进程（`ERR_INVALID_STATE`）。**
+  这是一个**真实且已独立复现**的崩溃路径，但**不是**那条
+  `JavaScript heap out of memory` 的根因——见下方「尚未定论」一节，
+  两者的证据不要混为一谈。
+
+  `appendLedgerEntry` 先查缓存、再 `await open()`，但**丢弃记录是即发即忘的**
+  （`burn(...).then(appendLedgerEntry)`），同一 tick 里会有多个 append 同时到达：
+  它们**都**看到缓存为空、**都**打开了文件。第二个 `handles.set(path, ...)`
+  覆盖了第一个，于是**第一个句柄被孤立**——不再有任何引用指向它，
+  `closeLedgerHandles` 永远够不到它。
+
+  孤立的**打开中**句柄由 Node 的 GC finalizer 关闭，而 Node 24 把这种情况
+  当作**硬错误**（`A FileHandle object was closed during garbage collection` /
+  `ERR_INVALID_STATE`）直接终止进程，不是警告。实测一次 12 路并发写入会泄漏
+  **11 个**描述符。
+
+  修复：新增 `pendingOpens` 去重进行中的 open，使并发 append 共享同一个句柄；
+  另加 `closing` 标志，让「关闭过程中才完成的 open」自己关掉句柄而不是发布一个
+  无人拥有的句柄。`closeLedgerHandles` 改用 `Promise.allSettled` 并聚合错误，
+  避免第一个 close 失败就让其余句柄继续泄漏进这条致命路径。
+
+  回归由 `tests/ledger-file.spec.ts` 锁住，**断言的是打开的描述符数**
+  （pre-fix 为 12、修复后为 1；dispose 后必须为 0）——只断言行数看不见这个 bug，
+  因为写入其实全都成功了，这正是它得以漏出的原因。
+
+- **尚未定论：`JavaScript heap out of memory` 的根因仍在排查。**
+  诚实记录边界，避免把上面那条句柄泄漏当成答案：
+
+  - 崩溃日志显示 OOM 发生在启动后约 **32 秒**（≈113 MB/s 的分配速度），
+    且 GC 是 `last resort`、`mu=0.001`，即堆里几乎全是**活对象**。
+  - 但**句柄泄漏撑不起这个量级**：实测 2000 个泄漏句柄只占约 **8 MB**；
+    而且泄漏会**先**触发 GC finalizer 的硬错误直接杀进程，
+    根本来不及慢慢涨到 3.6 GB。
+  - 本地已排除：`burn()` 的 `seen` 缓冲（20 万 chunk ≈ 41 MB）、
+    客户端 15s 轮询（服务端 1s 缓存）、插件反复加载（200 次循环 +0.16 MB）、
+    并发请求（8 路 × 25 轮堆平稳）。
+  - 因此 OOM 另有原因，需在真实进程中观测（host RSS + 堆快照）才能定论。
+
+  后续补充（2026-10-10）：用户的现场判别实验确认 **`billionaire` 档才崩、
+  切回 `millionaire` 后不再崩**（三次崩溃 13:47 / 13:48 / 14:33 均在使用
+  billionaire 期间，RSS 峰值 3.36–3.67 GB）。此后又排除了一整轮：
+
+  - 第二份流的 `finally` 清理未执行 —— 实测 200/200 全部执行，**零泄漏**
+  - 请求对象被强引用累积 —— `AGENT_LOOP_REQUESTS` 是 `WeakSet`
+  - 下游中间件被请求量放大 —— 该 profile 里 hindsight 与 onesuite-pilot
+    **都不挂** `llm/stream`
+  - 账本文件体积 —— 653 行 / 154 KB，读一次 5 ms
+
+  仍未确证「cache miss → JS 堆 OOM」这一环，故**不声称根因已找到**。
+  但下述改动移除了 billionaire 路径上**唯一一处随会话规模线性增长的内存开销**，
+  是目前最合理的候选。
+
+### Changed
+
+- **亿万富翁档改为在 system prompt 开头写入时间戳，不再插入前缀消息。**
+  原来的实现在 `messages` 最前面**插入**一条前缀消息，代价是每次派发都要重建
+  整个 `messages` 数组——而那个数组装着**整段会话**，长会话里它是一次请求中
+  最大的单个对象（实测 3000 条消息约 11.6 MB，且与真实会话同为线性规模）。
+
+  新实现只在**已有 system 消息的文本块头部加一行**
+  （`[i-am-rich] <ISO 时间戳>`，由新导出的纯函数 `billionaireStamp()` 生成）：
+
+  - 消息条数与原请求**完全一致**，除该条消息外其余消息**连对象引用都原样复用**
+    （有测试断言 `duplicate.messages[1]` 与原对象是同一个引用）；
+  - 同一负载下 200 次派发构造耗时从 **3.6ms 降到 0.6ms**；
+  - 时间戳**每次都不同**，所以两份重复请求之间也不会互相蹭到缓存——
+    固定前缀做不到这一点。
+
+  硬约束照旧：**必须克隆**。loop 构造的 `messages` 是 deep-freeze 的，
+  原地写会抛异常且会污染真实那一轮；克隆后原请求 bit-for-bit 不变（有测试断言）。
+  system 消息的 `id`/`source` 与其余非文本块一并保留，只重写开头那个文本块
+  （有测试断言）。
+
+  一处**如实降级**：system 角色必须是带 `id`/`source` 的持久 `Message`
+  （只有 `role: 'user'` 才能是不带身份的一次性 `RequestUserInput`），
+  给用完即弃的副本伪造持久身份正是本插件不能做的事。所以没有 system 消息的请求
+  回落为「照发第二份、不改前缀」，**仍是一次真实计费调用**。loop 构造的请求
+  总是带 system 消息，这是手搓一次性调用的形状。
+
+  测试同步：`tests/fortune.spec.ts` 由断言「插入的消息」改为断言
+  「system 头部被盖章 + 条数不变 + 原请求未变 + 消息身份复用 + 无 system 时降级」；
+  `tests/i-am-rich.spec.ts` 新增 `SYSTEM_OPTIONS` 夹具，因为旧的 `OPTIONS`
+  没有任何消息，在新语义下本就无法携带前缀。
+
+- **启用插件后整个回合失败：`cannot get property "llm" without inject`。**
+  这是「`fortune: billionaire` 一启用就直接报错、根本不敢开」的**根因**，
+  与上面那条状态条 bug 是**同一个机制**——cordis 在**已激活**的插件 fiber 上
+  读取一个既没 `inject` 也没 `provide` 的属性时**抛异常**，而不是返回
+  `undefined`。`dispatchDuplicate` 当时写成：
+
+  ```ts
+  const llm = (ctx as { llm?: ... }).llm
+  if (dispatchingDuplicate || llm?.stream === undefined) return next()
+  ```
+
+  `?.` 只防 `undefined`，**防不住会抛异常的 getter**：属性读取本身先抛出来，
+  降级分支永远到不了，异常一路冒泡成「本轮运行失败」。
+  之所以只有 `billionaire` 档中招，是因为 `millionaire` 档直接复用 `next()`，
+  根本不会走到这段读取。
+
+  修复为 `resolveLlm()`：先走**不抛异常**的服务查询 `ctx.get('llm')`，
+  再对直接赋值的裸 context 做一次 `try/catch` 兜底读取——
+  两种 context 存服务的方式不同（注册表 vs 自有属性），只读一种会漏。
+  `llm` 仍**不**写进 `inject`：注入会让 cordis 等到 LLM 运行时就绪才调用
+  `apply`，没有该服务的宿主会连「烧钱 + 记账」一起失去，而这只是丢了前缀。
+
+  回归由新增的 `tests/fiber-context.spec.ts` 锁住：它把 `apply` 跑在**真实
+  cordis fiber** 里（只 provide `connection`、不 provide `llm`），
+  断言不抛异常、且 `billionaire` 档仍然真的发出两次调用。
+  关键在于旧用例是**结构性看不见**这个 bug 的：它们用裸 `new Context()`
+  再手工赋值 `ctx.llm`，裸 context 不是代理，读取既不抛也不进注册表，
+  所以一直绿灯。
+
 - **状态条永远显示 0：路由因缺少 `inject` 声明而从未注册。**
   这是「账本文件明明在长大，状态条却一直是 `今日浪费 0`」的**根因**。
   cordis 在一个**已激活**的插件 fiber 上读取一个从未声明 `inject` 的服务，
@@ -185,6 +298,66 @@ Removed），正文用中文书写，与仓库的提交信息风格保持一致�
   **每一次都记不上账**；现在多 agent 不再是「有歧义」，
   只有在既没有 initiator、活跃 agent 又不恰好是一个时才真正放弃记录
   （此时 burn 照做，但不冒充归属）。
+
+- **重入保护从模块级标志位改为 `WeakSet` 对象身份标记。**
+  billionaire 档的嵌套派发需要一个「自己派发的那份直接穿透」的守卫，
+  原实现用模块级布尔标志（`dispatchingDuplicate`），
+  其正确性完全依赖一个时序假设：**嵌套派发必然同步进入监听器、
+  标志位在 `finally` 里同步清除**。真实 harness 里这恰是最脆弱的一环，
+  也是 billionaire 档现场崩溃排查中无法排除的候选。
+  现改为派发前把克隆请求登记进模块级 `WeakSet<GenerateOptions>`，
+  监听器入口按**对象身份**放行（`stampedDuplicates.has(options)`）：
+  身份标记没有任何时序依赖——克隆无论何时、以何种异步方式重入
+  waterfall 都能被认出；并发请求各自标记各自的克隆、互不干扰；
+  原件因身份唯一永不误匹配。克隆只在真正经 `ctx.llm.stream()`
+  派发时才登记，回退到 `next()` 的降级路径不登记（那份请求不会重入）。
+  新增 `tests/fiber-dispatch.spec.ts`：在「真实形态」下
+  （`llm` 经服务注册表 `provide`、其 `stream` 会重跑 `llm/stream` waterfall，
+  此前所有用例都未覆盖这条路径）断言带前缀的副本恰好到达内层派发一次、
+  消息条数不变、原请求对象未被篡改；千万富翁档仍走 `next()` 续接。
+
+- **状态条的「浪费」只统计两个数字：缓存未命中的输入 + 生成的输出。**
+  `totalTokens()` 原本是四桶之和；现在缓存两个桶（`cacheReadTokens` 与
+  `cacheWriteTokens`）都不计入显示。原因：缓存命中部分按 provider 的折扣价
+  计费，往往比全价输入低一个数量级——蹭到暖缓存的副本
+  （`millionaire` 档的全部意义）每个 token 几乎不花钱；缓存写入则是输入
+  前缀本身入仓，不是副本新「说」出来的东西。把这两类算进「浪费」会虚捧
+  数字而不代表真实的挥霍。
+  账本里四个桶**照常完整落盘**，这只是呈现口径的选择，记录本身仍是
+  provider 报告的完整真实用量；直接读账本或将来想改回全量口径都不丢数据。
+  测试同步：`tests/waste.spec.ts` 的合计断言改为 126
+  （105 输入 + 21 输出，剔除 30 个 cache read 与 7 个 cache write），
+  并新增一条「纯缓存 token 的丢弃显示为 0」的用例把这个口径钉住。
+
+### Fixed
+
+- **「富豪程度」选择器的三处状态机缺陷与账本降级路径的误读**（均为
+  `src/client/StatusBar.tsx`，现有 41 条状态条测试只直接渲染无状态 View、
+  从未挂载有状态外壳，因此全部漏测）：
+  1. **确认档位存在第二份事实来源。** `confirmed` ref 在渲染期读取、在 poll
+     稳态（`status` 已是 `ok`）下更新——React 对未变化 state 直接 bail out，
+     ref 的变更不触发重渲染，单选框可能显示陈旧档位最长一个轮询周期；
+     且 poll 与写入的完成顺序没有守卫，先于写入起飞的 poll 可以把单选框
+     悄悄拉回旧档。修复：档位改为 state，配**写入代数（`writeSeq`）守卫**——
+     每个 poll 在起飞时记下代数，只有代数未变才采纳 Host 报告的档位；
+     写入在**开始时**递增代数，在途 poll 的回答因此作废。
+  2. **`fortuneStatus` 永不复位。** 一次保存成功或失败后，「已保存 /
+     保存失败」一行会在整个标签页生命周期内驻留每次展开面板，违反其自身
+     「仅在有事可说时出现」的设计注释。修复：面板折叠时把终态复位为
+     `idle`（`saving` 保留——写入仍在途，单选框的禁用依赖它）。
+  3. **畸形响应被当作空账本。** `asLedger` 返回 `undefined` 时原实现
+     `setLedger(undefined)` 并标记 `ok`——上一份好账本被清成 0/0/0，
+     tooltip 显示「还没浪费 Token」，恰是失败态本该避免的误读。修复：
+     narrowing 失败按 **poll 失败**处理，保留最后一份好账本并显示冻结提示。
+  4. **day 桶不经校验直接进 fold。** `null` 桶会在渲染中抛 TypeError 打穿
+     整条状态条（客户端没有 error boundary），字符串/NaN 桶会被静默压成 0。
+     修复：`asLedger` 逐桶校验 fold 消费的全部字段为有限数字，任一非法
+     拒绝整个响应体（走上一条的失败路径）。
+  另修 `sumPeriods` 的月份匹配：`startsWith(month)` 过宽，
+  `2026-100`、`2026-01-15T00:00:00Z` 这类共享前缀的键会被计入当月；
+  现要求**键长为 10 且前 7 字符等于当月**。`asLedger` 相应导出为纯函数
+  并新增直接测试；外壳状态机（#1/#2）需挂载真实 DOM 才可测，
+  现有测试环境为纯 React 元素断言，暂以实现注释与回归用例钉住纯函数部分。
 
 ## [0.0.1]
 

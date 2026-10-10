@@ -68,6 +68,25 @@ export function ledgerMonthPath(root: string, month: string): string {
 const handles = new Map<string, FileHandle>()
 
 /**
+ * Opens in flight, keyed by path.
+ *
+ * Discards are appended fire-and-forget and several can arrive in the same
+ * tick, so "is it cached yet?" is not enough to decide who opens the file:
+ * without this map two callers race through the `mkdir`/`open` awaits, and the
+ * handle that loses the cache slot is orphaned while still open.
+ */
+const pendingOpens = new Map<string, Promise<FileHandle>>()
+
+/**
+ * Whether {@link closeLedgerHandles} is running.
+ *
+ * An open that completes after the cache was cleared would publish a handle no
+ * disposer will ever reach, so the open path checks this flag and closes its
+ * own handle rather than leaking one into the fatal GC path.
+ */
+let closing = false
+
+/**
  * Append one discard to its month's file.
  *
  * Fire-and-forget from the caller's perspective: a failure here is reported
@@ -80,14 +99,53 @@ const handles = new Map<string, FileHandle>()
 export async function appendLedgerEntry(root: string, data: LlmWasteEventData): Promise<void> {
   const month = data.day.slice(0, 7)
   const path = ledgerMonthPath(root, month)
-  let handle = handles.get(path)
-  if (handle === undefined) {
+  const line = `${
+    JSON.stringify({ v: LEDGER_LINE_VERSION, ...data })
+  }\n`
+  await handleFor(root, path).then(handle => handle.writeFile(line))
+}
+
+/**
+ * Resolve the shared append handle for one monthly file, opening it at most
+ * once even under concurrent appends.
+ *
+ * The open is deduplicated through {@link pendingOpens} because discards are
+ * recorded fire-and-forget and several land at once: without it, two callers
+ * both observe an empty cache, both open the file, and the loser's handle is
+ * dropped on the floor — overwritten in the cache by the winner and never
+ * closed. A leaked open `FileHandle` is not a benign leak: Node closes it from
+ * a GC finalizer and raises `ERR_INVALID_STATE` as a hard error, which takes
+ * the entire host process down and reaches the user as a crashed dsh.
+ * @param root - ledger root directory, created if absent.
+ * @param path - the monthly file to append to.
+ * @returns the cached handle, opening it if this is the first caller.
+ */
+async function handleFor(root: string, path: string): Promise<FileHandle> {
+  const cached = handles.get(path)
+  if (cached !== undefined) return cached
+  const inFlight = pendingOpens.get(path)
+  if (inFlight !== undefined) return inFlight
+  const opening = (async (): Promise<FileHandle> => {
     await mkdir(root, { recursive: true })
-    handle = await open(path, 'a')
+    const handle = await open(path, 'a')
+    // The cache is authoritative for closing: a handle handed back to callers
+    // must be the one the disposer will reach, or it leaks into the fatal GC
+    // path above. A concurrent `closeLedgerHandles` can clear the cache while
+    // this open is still in flight, so re-check and close our own handle
+    // instead of publishing one nothing owns.
+    if (closing) {
+      await handle.close()
+      throw new Error('i-am-rich: ledger is closing; append rejected')
+    }
     handles.set(path, handle)
+    return handle
+  })()
+  pendingOpens.set(path, opening)
+  try {
+    return await opening
+  } finally {
+    pendingOpens.delete(path)
   }
-  const line = JSON.stringify({ v: LEDGER_LINE_VERSION, ...data }) + '\n'
-  await handle.writeFile(line)
 }
 
 /**
@@ -95,11 +153,35 @@ export async function appendLedgerEntry(root: string, data: LlmWasteEventData): 
  *
  * Called on plugin disposal: without it, handles outlive the plugin and a
  * later reload would write through a stale descriptor.
+ *
+ * A handle that is dropped while still open is fatal, not merely untidy: Node
+ * closes leaked `FileHandle`s from a GC finalizer and treats that as an
+ * `ERR_INVALID_STATE` hard error that takes the whole host process down
+ * ("A FileHandle object was closed during garbage collection"), which is how a
+ * leaked ledger descriptor surfaces to the user as a crashed dsh rather than as
+ * a warning. Every handle is therefore closed explicitly here, and a close
+ * failure is collected rather than allowed to abandon the remaining handles:
+ * stopping at the first rejection would leak every later descriptor into
+ * exactly that fatal path.
+ * @returns a promise that settles once every cached handle has been closed.
  */
 export async function closeLedgerHandles(): Promise<void> {
+  closing = true
+  // Drain the shared map *before* awaiting, so a concurrent append cannot
+  // observe a half-closed cache and write through a descriptor being closed.
   const open = [...handles.values()]
   handles.clear()
-  await Promise.all(open.map(handle => handle.close()))
+  const results = await Promise.allSettled(open.map(handle => handle.close()))
+  // Reopenable afterwards: a reload mounts the plugin again and must be able to
+  // record into the same month's file.
+  closing = false
+  const failed = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (failed.length > 0) {
+    // One unreachable descriptor must not mask the fate of the others; there is
+    // no recovery here beyond reporting, because the file system already owns
+    // durability of what was written.
+    throw new AggregateError(failed.map(result => result.reason), `i-am-rich: failed to close ${String(failed.length)} ledger handle(s)`)
+  }
 }
 
 /**

@@ -7,6 +7,7 @@
  * tolerance of a crash-truncated tail.
  */
 
+import { execSync } from 'node:child_process'
 import { mkdtemp, readFile, readdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,6 +41,27 @@ async function tempRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'i-am-rich-'))
   cleanup.push(root)
   return root
+}
+
+/**
+ * Count this process's open descriptors for one file.
+ *
+ * The ledger's real failure mode is a descriptor that outlives its owner, which
+ * is invisible to the file's own contents; counting descriptors is the only
+ * assertion that sees it. `lsof` is used rather than `/dev/fd` because the
+ * latter lists descriptors for the *calling* process only on Linux and is a
+ * thin `lsof` on macOS.
+ * @param path - the file whose descriptors to count.
+ * @returns how many descriptors this process currently holds for `path`.
+ */
+function openDescriptors(path: string): number {
+  try {
+    const output = execSync(`lsof -p ${String(process.pid)} 2>/dev/null | grep -c -- ${JSON.stringify(path)}`)
+    return Number(output.toString().trim())
+  } catch {
+    // `grep -c` exits non-zero when it matches nothing, which is zero here.
+    return 0
+  }
 }
 
 describe('ledgerRoot', () => {
@@ -144,5 +166,60 @@ describe('appendLedgerEntry / readLedgerDays', () => {
     const days = await readLedgerDays(await tempRoot())
 
     expect(days).toEqual({})
+  })
+})
+
+describe('ledger handle lifecycle', () => {
+  /**
+   * Concurrent appends must share one handle.
+   *
+   * Discards are recorded fire-and-forget, so several `appendLedgerEntry` calls
+   * land in the same tick. Before `pendingOpens` deduplicated the open, both
+   * callers passed the empty-cache check, both opened the file, and the handle
+   * that lost the cache slot was orphaned while still open. Node closes such a
+   * leaked `FileHandle` from a GC finalizer and raises `ERR_INVALID_STATE` as a
+   * hard error, killing the whole host process — the user-visible symptom was
+   * dsh crashing rather than a ledger warning.
+   *
+   * The assertion counts open descriptors for the month's file, because that is
+   * the leak itself: the bug left 11 of 12 descriptors open after disposal, and
+   * each orphan is eventually closed by a GC finalizer that Node treats as a
+   * fatal `ERR_INVALID_STATE`. A line-count assertion cannot see this — the
+   * writes still all landed — which is exactly why the leak shipped.
+   */
+  it('opens one descriptor per file across a concurrent burst, and closes it on disposal', async () => {
+    const root = await tempRoot()
+    const monthPath = ledgerMonthPath(root, '2026-01')
+    const burst = Array.from({ length: 12 }, (_value, index) =>
+      appendLedgerEntry(root, waste('2026-01-05', { wasteId: WasteId(`w-burst-${String(index)}`) })))
+
+    await expect(Promise.all(burst)).resolves.toHaveLength(12)
+    // Twelve concurrent appends must share a single descriptor, not open twelve.
+    expect(openDescriptors(monthPath)).toBe(1)
+
+    await closeLedgerHandles()
+    // Nothing may survive disposal: an orphan here is the fatal GC leak.
+    expect(openDescriptors(monthPath)).toBe(0)
+
+    const text = await readFile(monthPath, 'utf8')
+    const lines = text.split('\n').filter(line => line !== '')
+    // Every concurrent append landed as its own complete line: a lost handle
+    // would have dropped writes as well as leaked a descriptor.
+    expect(lines).toHaveLength(12)
+    expect(new Set(lines.map(line => (JSON.parse(line) as LlmWasteEventData).wasteId)).size).toBe(12)
+  })
+
+  it('accepts appends again after disposal', async () => {
+    const root = await tempRoot()
+    await appendLedgerEntry(root, waste('2026-01-05'))
+    await closeLedgerHandles()
+
+    // A reload mounts the plugin again against the same month's file.
+    await expect(appendLedgerEntry(root, waste('2026-01-05'))).resolves.toBeUndefined()
+
+    const days = await readLedgerDays(root)
+    // The minimum-shape discard carries no `usage`, so it folds as unpriced;
+    // what this case pins is that the post-disposal append was recorded at all.
+    expect(days['2026-01-05']).toMatchObject({ unpricedCalls: 2 })
   })
 })

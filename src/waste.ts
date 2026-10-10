@@ -133,8 +133,11 @@ export interface WastePeriods {
  * calendar-correct periods.
  *
  * A day key that is not a well-formed `YYYY-MM-DD` still contributes to
- * {@link WastePeriods.total}, but can match neither the day nor the month
- * prefix, so malformed data can never inflate a period it does not belong to.
+ * {@link WastePeriods.total}, but matches neither today exactly nor a
+ * full-length key's month slice, so malformed data can never inflate a period
+ * it does not belong to. The month test checks the key's length as well as its
+ * prefix: prefix alone would let a key like `2026-10-05T00:00:00Z` or
+ * `2026-100` count toward October.
  * @param days - day-keyed buckets from the `wasteLedger` projection.
  * @param now - the reader's current instant, supplying today and this month.
  * @returns discarded-token totals for each period.
@@ -156,7 +159,7 @@ export function sumPeriods(days: Record<string, WasteTotals>, now: Date): WasteP
     totalTokens_ += tokens
     totalCalls += calls
     unpricedCalls += totals.unpricedCalls
-    if (day.startsWith(month)) {
+    if (day.length === 10 && day.slice(0, 7) === month) {
       monthTokens += tokens
       monthCalls += calls
     }

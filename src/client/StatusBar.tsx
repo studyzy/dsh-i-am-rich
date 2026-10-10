@@ -298,16 +298,50 @@ function unitKey(unit: MagnitudeUnit): IAmRichKey {
 }
 
 /**
- * Narrow one polled ledger body into the view the bar renders.
+ * Whether one polled day bucket is fully numeric where the fold reads it.
  *
- * `fortune` is carried through only when it is a string; a Host that does not
- * report one leaves it undefined, which the picker renders as "no selection"
- * rather than as a guess.
+ * The buckets are folded with plain arithmetic, so a `null` or string field
+ * would either throw mid-render (taking the whole bar down — there is no error
+ * boundary around it) or coerce into a silent `0`. The client cannot trust the
+ * wire shape: a malformed ledger must be rejected wholesale (the poll then
+ * reports a failure and the last good figures freeze visibly) rather than
+ * partially rendered as zeroes.
+ * @param bucket - one polled day bucket.
+ * @returns whether every field the fold reads is a finite number.
  */
+function isLedgerBucket(bucket: unknown): boolean {
+  if (typeof bucket !== 'object' || bucket === null) return false
+  const fields = bucket as Record<string, unknown>
+  const required = ['pricedCalls', 'unpricedCalls', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'] as const
+  return required.every(field => typeof fields[field] === 'number' && Number.isFinite(fields[field]))
+}
+
+/**
+ * Whether a piece of async work still owns the right to write state.
+ *
+ * The rule is deliberately one comparison in one place: the bar is updated from
+ * two independent async sources (the ledger poll and the fortune write), and a
+ * response is only allowed to move the UI while it is still the newest thing
+ * that was asked for. Both callers capture the token at start and re-test it on
+ * arrival.
+ * @param current - the token minted for the run that is live now.
+ * @param token - the token captured when the in-flight work started.
+ * @returns whether that work is still the current one.
+ */
+export function isCurrentRun(current: { readonly live: boolean }, token: { readonly live: boolean }): boolean {
+  return current === token && token.live
+}
+
+/**
+ * Narrow one polled ledger body into the view the bar renders. */
 export function asLedger(value: unknown): WasteLedgerView | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const { days, fortune } = value as Partial<WasteLedgerView>
   if (typeof days !== 'object' || days === null) return undefined
+  if (!Object.values(days).every(isLedgerBucket)) return undefined
+  // `fortune` is carried through only when it is a string; a Host that does not
+  // report one leaves it undefined, which the picker renders as "no selection"
+  // rather than as a guess.
   return typeof fortune === 'string' ? { days, fortune } : { days }
 }
 
@@ -506,7 +540,22 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
   // bails out on an unchanged `Object.is` — and the radio could show a stale
   // tier for up to one poll interval.
   const [fortuneTier, setFortuneTier] = useState<FortuneTier | undefined>(undefined)
-  const alive = useRef(true)
+  // This mount's liveness token. The effect owns the token it mints, and every
+  // piece of async work captures the one live at its start — so a promise that
+  // settles after an unmount (or after React's StrictMode remount) can tell it
+  // has been disowned instead of writing state into a dead tree. The token is
+  // an object identity rather than a boolean so a remount cannot resurrect an
+  // older run's work by flipping the flag back to true.
+  const alive = useRef<{ readonly live: boolean }>({ live: false })
+  /**
+   * Whether this component is still mounted.
+   *
+   * Reads the token minted by the current effect run, so work started by an
+   * earlier run (or an earlier mount, after React reuses the ref object) can
+   * recognise itself as stale instead of writing state into a dead tree.
+   * @returns whether the current effect run is still the live one.
+   */
+  const isLive = (token: { readonly live: boolean }): boolean => isCurrentRun(alive.current, token)
   // Monotonic write generation. A poll that started before the current write
   // began carries the tier as it was *then*; adopting its answer would revert
   // the radio behind the write's back. Each poll captures the generation at
@@ -516,7 +565,10 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
   const writeSeq = useRef(0)
 
   useEffect(() => {
-    alive.current = true
+    // Captured by value into this effect's closures, so the cleanup below can
+    // only ever silence its own run, never a later one.
+    const token = { live: true }
+    alive.current = token
 
     const controller = new AbortController()
 
@@ -526,16 +578,18 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
         const response = await fetch(WASTE_LEDGER_PATH, { signal: controller.signal })
         if (!response.ok) throw new Error(`ledger route answered ${String(response.status)}`)
         const body: unknown = await response.json()
-        if (!alive.current) return
+        if (!isLive(token)) return
+        // A body that does not narrow to a ledger is a failed poll, not an
+        // empty one: treating it as `undefined` would wipe the last good
+        // figures and mark the poll `ok` — showing zeroes that read as
+        // "nothing wasted" when the truth is "the answer was unusable".
         const next = asLedger(body)
+        if (next === undefined) throw new Error('ledger route body was not a ledger')
         setLedger(next)
-        // A poll that started before the current write began carries the tier
-        // as it was *then*; adopting its answer would revert the radio behind
-        // the write's back, so the generation is re-tested on arrival.
-        if (writeSeq.current === seqAtStart && isFortuneTier(next?.fortune)) setFortuneTier(next.fortune)
+        if (writeSeq.current === seqAtStart && isFortuneTier(next.fortune)) setFortuneTier(next.fortune)
         setStatus('ok')
       } catch {
-        if (!alive.current || controller.signal.aborted) return
+        if (!isLive(token) || controller.signal.aborted) return
         setStatus('error')
       }
     }
@@ -547,7 +601,11 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
-      alive.current = false
+      // Mint a fresh, already-dead token for whichever effect runs next, so
+      // this run's pending work is disowned without waiting for the remount to
+      // start. `isLive` then answers false for this run and for the window
+      // before the next one installs its own token.
+      alive.current = { live: false }
       controller.abort()
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisible)
@@ -572,7 +630,11 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
    * naming a tier the burn is no longer using.
    */
   const chooseFortune = async (tier: FortuneTier): Promise<void> => {
-    writeSeq.current += 1
+    const seq = writeSeq.current + 1
+    writeSeq.current = seq
+    // The run this write belongs to. Captured now, so a write that outlives an
+    // unmount is disowned even though the age check below would pass.
+    const token = alive.current
     setFortuneStatus('saving')
     try {
       const response = await fetch(FORTUNE_PATH, {
@@ -581,11 +643,15 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
         body: JSON.stringify({ fortune: tier }),
       })
       if (!response.ok) throw new Error(`fortune route answered ${String(response.status)}`)
-      if (!alive.current) return
+      if (!isLive(token)) return
+      // A superseded write reports nothing: the newer write owns the radio and
+      // the status line, and this one's failure must not label it either.
+      if (writeSeq.current !== seq) return
       setFortuneTier(tier)
       setFortuneStatus('saved')
     } catch {
-      if (!alive.current) return
+      if (!isLive(token)) return
+      if (writeSeq.current !== seq) return
       setFortuneStatus('error')
     }
   }
@@ -600,7 +666,14 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
       fortuneStatus={fortuneStatus}
       onFortune={tier => { void chooseFortune(tier) }}
       onEnter={() => setExpanded(true)}
-      onLeave={() => setExpanded(false)}
+      onLeave={() => {
+        setExpanded(false)
+        // A terminal write status ('saved' / 'error') is news about one write,
+        // not a standing property of the picker — leaving it set would pin the
+        // line into every future expansion. 'saving' stays: the write is still
+        // in flight and the radio's disable depends on it.
+        setFortuneStatus(current => current === 'saving' ? current : 'idle')
+      }}
     />
   )
 }
