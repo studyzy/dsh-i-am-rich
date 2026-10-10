@@ -9,8 +9,9 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { WasteStatusBarView } from '../src/client/StatusBar.tsx'
+import { WasteStatusBarView, asLedger } from '../src/client/StatusBar.tsx'
 import { en, zh, COIN } from '../src/client/locales.ts'
+import { FORTUNE_TIERS, type FortuneTier, type FortuneWriteStatus } from '../src/client/contracts.ts'
 import type { LedgerStatus, WasteLedgerView, WasteTotals } from '../src/client/contracts.ts'
 
 /** Build a day bucket with the given token count. */
@@ -93,6 +94,11 @@ function render(
     expanded,
     onEnter: () => {},
     onLeave: () => {},
+    // The picker's own state is exercised by the dedicated cases below; the
+    // figure and layout cases only need it present and inert.
+    fortuneTier: undefined,
+    fortuneStatus: 'idle',
+    onFortune: () => {},
     t: translate as never,
     ledger: view,
     status,
@@ -136,19 +142,24 @@ function findByProp(node: unknown, prop: string): React.ReactElement | undefined
 }
 
 /**
- * The bar's direct children.
+ * The bar's direct period rows.
  *
  * The layout lives on the element's own style, so asserting "one row" means
  * looking at exactly the cells the bar places in that row — not at the tree
  * flattened, which would not distinguish one row from four.
+ *
+ * The fortune picker is filtered out rather than counted: it is a control the
+ * expanded panel renders above the periods, so it is a direct child but never
+ * a period row, and every caller here is asking about the period rows.
  * @param element - the rendered bar.
- * @returns its direct child elements.
+ * @returns its direct period-row child elements.
  */
 function childrenOf(element: React.ReactElement | null): (React.ReactElement & { props: Record<string, unknown> })[] {
   const children = (element?.props as { children?: unknown })?.children
   const list = Array.isArray(children) ? children : [children]
   return list.flat().filter((child): child is React.ReactElement & { props: Record<string, unknown> } =>
-    child !== null && child !== undefined && typeof child === 'object')
+    child !== null && child !== undefined && typeof child === 'object'
+    && (child as { props?: Record<string, unknown> }).props?.['data-i-am-rich-period'] !== undefined)
 }
 
 /**
@@ -210,9 +221,9 @@ describe('waste status bar', () => {
   it('renders today, this month, and all-time figures', () => {
     const element = render(ledger())
 
-    expect(periodText(element, 'today')).toBe('Wasted today100')
-    expect(periodText(element, 'month')).toBe('Wasted this month300')
-    expect(periodText(element, 'total')).toBe('Wasted all time700')
+    expect(periodText(element, 'today')).toBe('Wasted today100tokens')
+    expect(periodText(element, 'month')).toBe('Wasted this month300tokens')
+    expect(periodText(element, 'total')).toBe('Wasted all time700tokens')
   })
 
   it('renders Chinese copy through the zh dictionary', () => {
@@ -223,9 +234,9 @@ describe('waste status bar', () => {
     }
     const element = render(ledger(), translate as never)
 
-    expect(periodText(element, 'today')).toBe('今日浪费100')
-    expect(periodText(element, 'month')).toBe('本月浪费300')
-    expect(periodText(element, 'total')).toBe('累计浪费700')
+    expect(periodText(element, 'today')).toBe('今日浪费100Token')
+    expect(periodText(element, 'month')).toBe('本月浪费300Token')
+    expect(periodText(element, 'total')).toBe('累计浪费700Token')
   })
 
   it('sums a month that has already rolled over', () => {
@@ -234,9 +245,9 @@ describe('waste status bar', () => {
     const stale: WasteLedgerView = { days: { [dayKey(daysFromToday(-40))]: bucket(400) } }
     const element = render(stale)
 
-    expect(periodText(element, 'today')).toBe('Wasted today0')
-    expect(periodText(element, 'month')).toBe('Wasted this month0')
-    expect(periodText(element, 'total')).toBe('Wasted all time400')
+    expect(periodText(element, 'today')).toBe('Wasted today0tokens')
+    expect(periodText(element, 'month')).toBe('Wasted this month0tokens')
+    expect(periodText(element, 'total')).toBe('Wasted all time400tokens')
   })
 
   it('shows three zeros before the first poll has answered', () => {
@@ -247,8 +258,8 @@ describe('waste status bar', () => {
 
     expect(element?.props['data-i-am-rich-waste']).toBe('empty')
     expect(element?.props['data-i-am-rich-status']).toBe('loading')
-    expect(periodText(element, 'today')).toBe('Wasted today0')
-    expect(periodText(element, 'total')).toBe('Wasted all time0')
+    expect(periodText(element, 'today')).toBe('Wasted today0tokens')
+    expect(periodText(element, 'total')).toBe('Wasted all time0tokens')
   })
 
   it('marks the poll state on the rendered bar', () => {
@@ -264,7 +275,7 @@ describe('waste status bar', () => {
     expect(element?.props['data-i-am-rich-status']).toBe('error')
     expect(element?.props.title).toContain('Ledger unavailable')
     expect(element?.props.title).toContain('Wasted all time 700')
-    expect(periodText(element, 'total')).toBe('Wasted all time700')
+    expect(periodText(element, 'total')).toBe('Wasted all time700tokens')
   })
 
   it('keeps the plain tooltip when the poll succeeded', () => {
@@ -278,7 +289,7 @@ describe('waste status bar', () => {
 
     expect(element?.props['data-i-am-rich-waste']).toBe('empty')
     expect(element?.props.title).toBe('No tokens wasted yet')
-    expect(periodText(element, 'total')).toBe('Wasted all time0')
+    expect(periodText(element, 'total')).toBe('Wasted all time0tokens')
   })
 
   it('names unpriced calls in the tooltip instead of counting them as tokens', () => {
@@ -287,7 +298,7 @@ describe('waste status bar', () => {
     }
     const element = render(withUnpriced)
 
-    expect(periodText(element, 'total')).toBe('Wasted all time600')
+    expect(periodText(element, 'total')).toBe('Wasted all time600tokens')
     expect(element?.props.title).toContain('2 billed calls')
     expect(element?.props.title).toContain('4 more calls reported no usage')
   })
@@ -300,7 +311,7 @@ describe('waste status bar', () => {
 
     // Tokens are zero, but unpriced calls exist, so the bar is not "empty".
     expect(element?.props.title).toContain('3 more calls reported no usage')
-    expect(periodText(element, 'total')).toBe('Wasted all time0')
+    expect(periodText(element, 'total')).toBe('Wasted all time0tokens')
   })
 })
 
@@ -329,7 +340,7 @@ describe('sidebar rail', () => {
     const element = render(ledger, zhT as never, true, false)
 
     expect(element?.props['data-i-am-rich-expanded']).toBe('false')
-    expect(periodText(element, 'today')).toBe('今日浪费2249万')
+    expect(periodText(element, 'today')).toBe('今日浪费2249万Token')
 
     const rows = childrenOf(element)
     expect(rows).toHaveLength(1)
@@ -346,9 +357,9 @@ describe('sidebar rail', () => {
     const element = render(ledger, zhT as never, true, true)
 
     expect(element?.props['data-i-am-rich-expanded']).toBe('true')
-    expect(periodText(element, 'today')).toBe('今日浪费2249万')
-    expect(periodText(element, 'month')).toBe('本月浪费2249万')
-    expect(periodText(element, 'total')).toBe('累计浪费2249万')
+    expect(periodText(element, 'today')).toBe('今日浪费2249万Token')
+    expect(periodText(element, 'month')).toBe('本月浪费2249万Token')
+    expect(periodText(element, 'total')).toBe('累计浪费2249万Token')
 
     // One row per period, stacked, in order.
     const rows = childrenOf(element)
@@ -395,7 +406,7 @@ describe('sidebar rail', () => {
     for (const expanded of [false, true]) {
       const rail = render(ledger, zhT as never, false, expanded)
 
-      expect(periodText(rail, 'today')).toBe('2249万')
+      expect(periodText(rail, 'today')).toBe('2249万Token')
 
       const rows = childrenOf(rail)
       expect(rows).toHaveLength(1)
@@ -442,8 +453,8 @@ describe('sidebar rail', () => {
   it('keeps the 浪费 labels in the wide column', () => {
     const wide = render(ledger, zhT as never, true, true)
 
-    expect(periodText(wide, 'today')).toBe('今日浪费2249万')
-    expect(periodText(wide, 'total')).toBe('累计浪费2249万')
+    expect(periodText(wide, 'today')).toBe('今日浪费2249万Token')
+    expect(periodText(wide, 'total')).toBe('累计浪费2249万Token')
   })
 
   it('keeps the 浪费 label on the resting row too', () => {
@@ -451,7 +462,7 @@ describe('sidebar rail', () => {
     // dropped, or the resting row would read as spend rather than waste.
     const resting = render(ledger, zhT as never, true, false)
 
-    expect(periodText(resting, 'today')).toBe('今日浪费2249万')
+    expect(periodText(resting, 'today')).toBe('今日浪费2249万Token')
   })
 
   it('renders the coin in both widths', () => {
@@ -512,9 +523,9 @@ describe('magnitude display', () => {
     // 22,488,345 is the real ledger total; it is not yet 亿, so it reads as 万.
     const element = render(spend(22_488_345), zhT as never)
 
-    expect(periodText(element, 'today')).toBe('今日浪费2249万')
-    expect(periodText(element, 'month')).toBe('本月浪费2249万')
-    expect(periodText(element, 'total')).toBe('累计浪费2249万')
+    expect(periodText(element, 'today')).toBe('今日浪费2249万Token')
+    expect(periodText(element, 'month')).toBe('本月浪费2249万Token')
+    expect(periodText(element, 'total')).toBe('累计浪费2249万Token')
   })
 
   it('spells out 浪费 in every Chinese label, not just the period', () => {
@@ -538,15 +549,15 @@ describe('magnitude display', () => {
   it('scales a nine-figure count to 亿 in Chinese', () => {
     const element = render(spend(250_000_000), zhT as never)
 
-    expect(periodText(element, 'today')).toBe('今日浪费2.5亿')
-    expect(periodText(element, 'total')).toBe('累计浪费2.5亿')
+    expect(periodText(element, 'today')).toBe('今日浪费2.5亿Token')
+    expect(periodText(element, 'total')).toBe('累计浪费2.5亿Token')
   })
 
   it('uses K/M/B under the English dictionary rather than 万/亿', () => {
     const element = render(spend(22_488_345))
 
-    expect(periodText(element, 'today')).toBe('Wasted today22.49M')
-    expect(periodText(element, 'total')).toBe('Wasted all time22.49M')
+    expect(periodText(element, 'today')).toBe('Wasted today22.49Mtokens')
+    expect(periodText(element, 'total')).toBe('Wasted all time22.49Mtokens')
   })
 
   it('never renders a bare 0亿 for a figure that is plainly millions', () => {
@@ -555,14 +566,14 @@ describe('magnitude display', () => {
     const element = render(spend(22_488_345), zhT as never)
 
     expect(periodText(element, 'total')).not.toContain('0亿')
-    expect(periodText(element, 'total')).toBe('累计浪费2249万')
+    expect(periodText(element, 'total')).toBe('累计浪费2249万Token')
   })
 
   it('keeps the exact integer in the tooltip while the bar is scaled', () => {
     const element = render(spend(22_488_345), zhT as never)
 
     // Display is scaled; the tooltip is the record.
-    expect(periodText(element, 'total')).toBe('累计浪费2249万')
+    expect(periodText(element, 'total')).toBe('累计浪费2249万Token')
     expect(element?.props.title).toContain('22,488,345')
   })
 
@@ -572,5 +583,208 @@ describe('magnitude display', () => {
 
     expect(cn?.props['data-i-am-rich-scale']).toBe('zh')
     expect(us?.props['data-i-am-rich-scale']).toBe('en')
+  })
+})
+describe('fortune picker', () => {
+  /** Render the picker with explicit tier and status. */
+  function renderPicker(fortuneTier: FortuneTier | undefined, fortuneStatus: FortuneWriteStatus = 'idle', wide = true, expanded = true) {
+    return WasteStatusBarView({
+      wide,
+      expanded,
+      t: ((key: keyof typeof en, params?: Record<string, unknown>) => {
+        const template = en[key]
+        return params === undefined ? template : template.replace(/\{(\w+)\}/g, (_m, n: string) => String(params[n] ?? ''))
+      }) as never,
+      ledger: ledger(),
+      status: 'ok',
+      fortuneTier,
+      fortuneStatus,
+      onFortune: () => {},
+      onEnter: () => {},
+      onLeave: () => {},
+    }) as React.ReactElement
+  }
+
+  /** Every tier radio in the picker, in render order. */
+  function tiersOf(element: React.ReactElement): React.ReactElement[] {
+    const found: React.ReactElement[] = []
+    const walk = (node: unknown): void => {
+      if (node === null || node === undefined || typeof node !== 'object') return
+      if (Array.isArray(node)) { for (const child of node) walk(child); return }
+      const el = node as React.ReactElement & { props?: Record<string, unknown> }
+      if (el.props?.['data-i-am-rich-tier'] !== undefined) found.push(el)
+      walk(el.props?.children)
+    }
+    walk(element)
+    return found
+  }
+
+  it('renders both tiers as radios, above the periods', () => {
+    const element = renderPicker('millionaire')
+    const picker = findByProp(element, 'data-i-am-rich-picker')
+
+    expect(picker).toBeDefined()
+    expect(tiersOf(element)).toHaveLength(2)
+
+    // Order: the picker is a direct child placed before the period rows.
+    const children = (element.props.children as React.ReactElement[]).flat()
+    const pickerIndex = children.findIndex(child => (child as React.ReactElement).props?.['data-i-am-rich-picker'] !== undefined)
+    const firstPeriod = children.findIndex(child => (child as React.ReactElement).props?.['data-i-am-rich-period'] !== undefined)
+    expect(pickerIndex).toBeGreaterThanOrEqual(0)
+    expect(pickerIndex).toBeLessThan(firstPeriod)
+  })
+
+  it('checks exactly the tier the host confirmed', () => {
+    for (const tier of FORTUNE_TIERS) {
+      const element = renderPicker(tier)
+      const boxes = tiersOf(element).flatMap(row =>
+        ([] as React.ReactElement[]).concat(row.props.children as React.ReactElement[]))
+        .filter(child => (child as React.ReactElement).type === 'input')
+      const checked = boxes.filter(box => (box.props as { checked?: boolean }).checked === true)
+      expect(checked).toHaveLength(1)
+      expect((checked[0]!.props as { value?: string }).value).toBe(tier)
+    }
+  })
+
+  it('checks nothing when the host reported no tier', () => {
+    // A guess here would show a tier the burn may not be using.
+    const element = renderPicker(undefined)
+    const inputs = tiersOf(element).flatMap(row =>
+      ([] as React.ReactElement[]).concat(row.props.children as React.ReactElement[]))
+      .filter(child => (child as React.ReactElement).type === 'input')
+
+    expect(inputs.length).toBeGreaterThan(0)
+    expect(inputs.every(box => (box.props as { checked?: boolean }).checked !== true)).toBe(true)
+  })
+
+  it('hides the picker in the resting row and in the rail', () => {
+    // A control belongs in the opened panel, not in the readout.
+    expect(findByProp(renderPicker('millionaire', 'idle', true, false), 'data-i-am-rich-picker')).toBeUndefined()
+    expect(findByProp(renderPicker('millionaire', 'idle', false, true), 'data-i-am-rich-picker')).toBeUndefined()
+  })
+
+  it('reports the write status instead of the click', () => {
+    expect(textOf(renderPicker('millionaire', 'saving'))).toContain(en['fortune.saving'])
+    expect(textOf(renderPicker('millionaire', 'saved'))).toContain(en['fortune.saved'])
+    // A failed save must stay on the confirmed tier and say so.
+    const failed = renderPicker('millionaire', 'error')
+    expect(textOf(failed)).toContain(en['fortune.failed'])
+    const checked = tiersOf(failed).flatMap(row =>
+      ([] as React.ReactElement[]).concat(row.props.children as React.ReactElement[]))
+      .filter(child => (child as React.ReactElement).type === 'input')
+      .filter(box => (box.props as { checked?: boolean }).checked === true)
+    expect((checked[0]!.props as { value?: string }).value).toBe('millionaire')
+  })
+
+  it('disables the radios while a write is in flight', () => {
+    const saving = renderPicker('millionaire', 'saving')
+    const inputs = tiersOf(saving).flatMap(row =>
+      ([] as React.ReactElement[]).concat(row.props.children as React.ReactElement[]))
+      .filter(child => (child as React.ReactElement).type === 'input')
+
+    expect(inputs.every(box => (box.props as { disabled?: boolean }).disabled === true)).toBe(true)
+  })
+
+  it('calls back with the chosen tier', () => {
+    const chosen: string[] = []
+    const element = WasteStatusBarView({
+      wide: true, expanded: true, t: ((key: string) => en[key as keyof typeof en]) as never,
+      ledger: ledger(), status: 'ok', fortuneTier: 'millionaire', fortuneStatus: 'idle',
+      onFortune: tier => { chosen.push(tier) },
+      onEnter: () => {}, onLeave: () => {},
+    }) as React.ReactElement
+
+    const boxes = tiersOf(element).flatMap(row =>
+      ([] as React.ReactElement[]).concat(row.props.children as React.ReactElement[]))
+      .filter(child => (child as React.ReactElement).type === 'input')
+    const second = boxes[1]
+    expect(second).toBeDefined()
+    ;(second!.props as { onChange: () => void }).onChange()
+
+    expect(chosen).toEqual(['billionaire'])
+  })
+
+  it('exposes the tier and write status on the bar for styling and tests', () => {
+    expect(renderPicker('billionaire', 'saved').props['data-i-am-rich-fortune']).toBe('billionaire')
+    expect(renderPicker('billionaire', 'saved').props['data-i-am-rich-fortune-status']).toBe('saved')
+  })
+})
+
+describe('fortune picker layout', () => {
+  /** Render the picker and hand back the element plus its direct children. */
+  function picker() {
+    const element = WasteStatusBarView({
+      wide: true, expanded: true,
+      t: ((key: string) => en[key as keyof typeof en]) as never,
+      ledger: ledger(), status: 'ok', fortuneTier: 'millionaire', fortuneStatus: 'idle',
+      onFortune: () => {}, onEnter: () => {}, onLeave: () => {},
+    }) as React.ReactElement
+    return findByProp(element, 'data-i-am-rich-picker') as React.ReactElement
+  }
+
+  it('puts both tiers on one row, below the legend', () => {
+    const element = picker()
+    const children = (element.props.children as React.ReactElement[]).flat()
+
+    // The row is a single child holding both options: two separate top-level
+    // children is exactly the stacked layout this case exists to prevent.
+    const row = children.find(child =>
+      (child as React.ReactElement).props?.['data-i-am-rich-tier'] === undefined
+      && ([] as React.ReactElement[]).concat((child as React.ReactElement).props?.children as React.ReactElement[])
+        .some(inner => (inner as React.ReactElement).props?.['data-i-am-rich-tier'] !== undefined)) as React.ReactElement | undefined
+
+    expect(row).toBeDefined()
+    const options = ([] as React.ReactElement[]).concat(row!.props.children as React.ReactElement[])
+    expect(options.map(option => option.props['data-i-am-rich-tier'])).toEqual([...FORTUNE_TIERS])
+
+    const style = row!.props.style as Record<string, unknown>
+    expect(style.flexDirection).toBe('row')
+    // Wraps rather than clipping, so a narrow sidebar degrades to two lines
+    // instead of pushing the second option out of the column.
+    expect(style.flexWrap).toBe('wrap')
+
+    // No tier option is a direct child of the column any more.
+    expect(children.some(child => (child as React.ReactElement).props?.['data-i-am-rich-tier'] !== undefined)).toBe(false)
+  })
+
+  it('keeps the legend above the row and the status line below it', () => {
+    const element = picker()
+    const children = (element.props.children as React.ReactElement[]).flat()
+    const rowIndex = children.findIndex(child =>
+      ([] as React.ReactElement[]).concat((child as React.ReactElement).props?.children as React.ReactElement[] ?? [])
+        .some(inner => (inner as React.ReactElement).props?.['data-i-am-rich-tier'] !== undefined))
+
+    expect(rowIndex).toBeGreaterThan(0)
+    // The legend is the child before the row.
+    expect(textOf(children[rowIndex - 1] as React.ReactElement)).toBe(en['fortune.legend'])
+
+    const withStatus = WasteStatusBarView({
+      wide: true, expanded: true,
+      t: ((key: string) => en[key as keyof typeof en]) as never,
+      ledger: ledger(), status: 'ok', fortuneTier: 'millionaire', fortuneStatus: 'saving',
+      onFortune: () => {}, onEnter: () => {}, onLeave: () => {},
+    }) as React.ReactElement
+    const statusPicker = findByProp(withStatus, 'data-i-am-rich-picker') as React.ReactElement
+    const statusChildren = (statusPicker.props.children as React.ReactElement[]).flat()
+    const statusIndex = statusChildren.findIndex(child => (child as React.ReactElement).props?.['data-i-am-rich-fortune-message'] !== undefined)
+    expect(statusIndex).toBeGreaterThan(rowIndex)
+  })
+})
+
+describe('asLedger', () => {
+  it('accepts a well-formed body with and without a fortune tier', () => {
+    const body = { days: { '2026-01-05': bucket(100) } }
+    expect(asLedger(body)).toEqual({ days: body.days })
+    expect(asLedger({ ...body, fortune: 'billionaire' })).toEqual({ days: body.days, fortune: 'billionaire' })
+    // A tier outside the known set is not a selection the picker can render.
+    expect(asLedger({ ...body, fortune: 42 })).toEqual({ days: body.days })
+  })
+
+  it('rejects a body that is not an object or has no days', () => {
+    expect(asLedger('nope')).toBeUndefined()
+    expect(asLedger(null)).toBeUndefined()
+    expect(asLedger({})).toBeUndefined()
+    expect(asLedger({ days: 'all' })).toBeUndefined()
+    expect(asLedger({ days: null })).toBeUndefined()
   })
 })

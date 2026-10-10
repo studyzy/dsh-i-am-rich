@@ -10,11 +10,27 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { FORTUNE_TIERS, type FortuneTier } from './types.ts'
 import type { WasteTotals } from './waste.ts'
 import { readLedgerDays } from './ledger-file.ts'
 
 /** The exact route path the client polls. Fixed: the client build cannot import host modules. */
 export const WASTE_LEDGER_PATH = '/api/i-am-rich/waste'
+
+/**
+ * The exact route the client POSTs a fortune-tier change to.
+ *
+ * Separate from {@link WASTE_LEDGER_PATH} because the two have different
+ * methods and different failure meanings: a failed poll means "these figures
+ * may be stale", a failed write means "your choice was not saved".
+ */
+export const FORTUNE_PATH = '/api/i-am-rich/fortune'
+
+/** The shape a fortune write accepts and answers with. */
+export interface FortunePayload {
+  /** The tier the client is asking for. */
+  readonly fortune: string
+}
 
 /** The subset of `ctx.connection` this route registers through. */
 export interface WasteLedgerConnection {
@@ -59,7 +75,7 @@ const CACHE_TTL_MS = 1_000
  * @param root - ledger root directory to read from.
  * @returns the route definition for `connection.fetch.register`.
  */
-export function createWasteLedgerRoute(root: string): WasteLedgerFetchRoute {
+export function createWasteLedgerRoute(root: string, fortune?: () => FortuneTier): WasteLedgerFetchRoute {
   let cache: { readonly days: Record<string, WasteTotals>; readonly readAt: number } | undefined
   return {
     path: WASTE_LEDGER_PATH,
@@ -72,7 +88,14 @@ export function createWasteLedgerRoute(root: string): WasteLedgerFetchRoute {
         // error, not as an empty ledger that would silently reset the bar.
         cache = { days: await readLedgerDays(root), readAt: now }
       }
-      return Response.json({ days: cache.days }, { headers: { 'cache-control': 'no-store' } })
+      // The tier is read per request rather than cached with the days: the
+      // days are an expensive disk fold, the tier is a field already in memory,
+      // and a cached tier would leave the radio group showing the old choice
+      // for up to a second after a change.
+      return Response.json(
+        { days: cache.days, ...fortune === undefined ? {} : { fortune: fortune() } },
+        { headers: { 'cache-control': 'no-store' } },
+      )
     },
   }
 }
@@ -85,9 +108,10 @@ export function createWasteLedgerRoute(root: string): WasteLedgerFetchRoute {
  * condition is reported once rather than failing the plugin.
  * @param ctx - plugin context owning the route registration.
  * @param root - ledger root directory to read from.
+ * @param fortune - reads the tier currently in effect, reported alongside the days.
  * @returns the route's disposer, or `undefined` when there is no connection.
  */
-export function registerWasteLedgerRoute(ctx: Context, root: string): (() => Promise<void>) | undefined {
+export function registerWasteLedgerRoute(ctx: Context, root: string, fortune?: () => FortuneTier): (() => Promise<void>) | undefined {
   // `connection` is declared in this plugin's `inject`, so cordis has already
   // resolved it by the time `apply` runs and this read cannot throw. A missing
   // service is therefore a composition error worth surfacing, not something to
@@ -98,5 +122,64 @@ export function registerWasteLedgerRoute(ctx: Context, root: string): (() => Pro
     ctx.logger.warn('i-am-rich: no connection service, so the waste status bar has no route to poll; burning and recording continue.')
     return undefined
   }
-  return connection.fetch.register(createWasteLedgerRoute(root))
+  return connection.fetch.register(createWasteLedgerRoute(root, fortune))
+}
+
+/** Persist one fortune tier through the harness configuration editor. */
+export type FortuneWriter = (fortune: FortuneTier) => Promise<void>
+
+/**
+ * Build the fortune route without registering it.
+ *
+ * The route is a thin adapter over {@link FortuneWriter}: all of the real work
+ * — locking the profile document, validating the next config, reloading the
+ * plugin, and rolling back if the reload fails — belongs to the harness
+ * `configEditor` service, and this only translates HTTP to that call.
+ *
+ * An unknown tier is rejected with 400 rather than being coerced or ignored:
+ * the client's radio group is the only intended caller, so a value outside the
+ * known set means a bug or a hand-rolled request, and answering 200 would let
+ * the bar report a tier that is not the one in effect.
+ * @param write - persists one validated tier.
+ * @returns the route definition for `connection.fetch.register`.
+ */
+export function createFortuneRoute(write: FortuneWriter): WasteLedgerFetchRoute {
+  return {
+    path: FORTUNE_PATH,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request: Request): Promise<Response> => {
+      let body: unknown
+      try {
+        body = await request.json()
+      } catch {
+        return Response.json({ error: 'expected a JSON body' }, { status: 400 })
+      }
+      const fortune = (body as Partial<FortunePayload> | null)?.fortune
+      if (typeof fortune !== 'string' || !FORTUNE_TIERS.includes(fortune as FortuneTier)) {
+        return Response.json({ error: `fortune must be one of ${FORTUNE_TIERS.join(', ')}` }, { status: 400 })
+      }
+      try {
+        await write(fortune as FortuneTier)
+      } catch (error) {
+        // The editor's failure is the user's answer: the choice was not saved.
+        // Reporting it as 200 would let the radio group show a tier the profile
+        // does not hold, which is exactly the lie this plugin exists to avoid.
+        return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
+      }
+      return Response.json({ fortune }, { headers: { 'cache-control': 'no-store' } })
+    },
+  }
+}
+
+/**
+ * Register the fortune route on the shared `/api` channel.
+ * @param ctx - plugin context owning the route registration.
+ * @param write - persists one validated tier.
+ * @returns the route's disposer, or `undefined` when there is no connection.
+ */
+export function registerFortuneRoute(ctx: Context, write: FortuneWriter): (() => Promise<void>) | undefined {
+  const connection: WasteLedgerConnection | undefined = ctx.connection
+  if (connection === undefined) return undefined
+  return connection.fetch.register(createFortuneRoute(write))
 }

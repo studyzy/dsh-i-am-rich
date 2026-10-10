@@ -35,9 +35,24 @@ export const EMPTY_TOTALS: WasteTotals = {
   cacheWriteTokens: 0,
 }
 
-/** Total discarded tokens across every bucket. */
+/**
+ * The displayed waste figure: cache-miss input plus generated output, and
+ * nothing else.
+ *
+ * The cache buckets are deliberately excluded. A cache-read token is billed at
+ * the provider's steep discount — often an order of magnitude below a fresh
+ * input token — and a cache-write token is the input prefix itself being
+ * parked, not something new the duplicate produced. The joke's number is about
+ * what the duplicate actually *said and read at full price*, so the bar counts
+ * exactly two figures: fresh input and generated output.
+ *
+ * The raw buckets stay intact in the ledger — this is a presentation choice,
+ * the record is still the honest, complete provider-reported usage.
+ * @param totals - totals accumulated so far.
+ * @returns the cache-miss input plus output total.
+ */
 export function totalTokens(totals: WasteTotals): number {
-  return totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
+  return totals.inputTokens + totals.outputTokens
 }
 
 /**

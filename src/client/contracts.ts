@@ -21,6 +21,14 @@ export type SlotComponent<P> = (props: P) => unknown
 export interface WasteLedgerView {
   /** Every day the ledger recorded discarded usage on, keyed `YYYY-MM-DD`. */
   readonly days: Record<string, WasteTotals>
+  /**
+   * The fortune tier currently in effect, when the Host reported one.
+   *
+   * Absent on a harness whose Host half is older than this client, in which
+   * case the picker still renders but shows no selection rather than guessing
+   * one — a wrong radio would tell the user a tier the burn is not using.
+   */
+  readonly fortune?: string
 }
 
 /** One day's discarded-token buckets, as published over the wire. */
@@ -40,6 +48,32 @@ export interface WasteTotals {
  * must not pull Node-side modules into the browser build.
  */
 export const WASTE_LEDGER_PATH = '/api/i-am-rich/waste'
+
+/**
+ * The exact route the picker POSTs a tier change to.
+ *
+ * Spelled out here for the same reason as {@link WASTE_LEDGER_PATH}: the client
+ * bundle must not import Host modules, so the path is duplicated by hand and
+ * must be kept in step with the Host's `FORTUNE_PATH`.
+ */
+export const FORTUNE_PATH = '/api/i-am-rich/fortune'
+
+/** The fortune tiers, in display order, as the picker enumerates them. */
+export const FORTUNE_TIERS = ['millionaire', 'billionaire'] as const
+
+/** One selectable fortune tier. */
+export type FortuneTier = typeof FORTUNE_TIERS[number]
+
+/** How the last tier write ended, for the picker's own status line. */
+export type FortuneWriteStatus =
+  /** The tier the Host reported; nothing is being saved. */
+  | 'idle'
+  /** A write is in flight. */
+  | 'saving'
+  /** The latest write succeeded and the Host confirmed the new tier. */
+  | 'saved'
+  /** The latest write failed; the selection reverts to the confirmed tier. */
+  | 'error'
 
 /** How the last poll of the ledger route ended. */
 export type LedgerStatus =

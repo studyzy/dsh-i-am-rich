@@ -11,7 +11,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appendLedgerEntry, closeLedgerHandles } from '../src/ledger-file.ts'
-import { WASTE_LEDGER_PATH, createWasteLedgerRoute } from '../src/ledger-server.ts'
+import { Context } from '@deepseek-ai/cordis'
+import { apply } from '../src/index.ts'
+import { FORTUNE_PATH, WASTE_LEDGER_PATH, createFortuneRoute, createWasteLedgerRoute } from '../src/ledger-server.ts'
 import type { LlmWasteEventData } from '../src/types.ts'
 import { WasteId } from '../src/brand.ts'
 
@@ -163,5 +165,121 @@ describe('registerWasteLedgerRoute', () => {
     const ctx = new Context()
 
     expect(registerWasteLedgerRoute(ctx as never, await tempRoot())).toBeUndefined()
+  })
+})
+
+describe('fortune route', () => {
+  /** A POST to the fortune route with one JSON body. */
+  function post(body: unknown): Request {
+    return new Request(`http://host${FORTUNE_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('persists a known tier and answers with it', async () => {
+    const written: string[] = []
+    const route = createFortuneRoute(async (fortune) => { written.push(fortune) })
+
+    const response = await route.fetch(post({ fortune: 'billionaire' }))
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ fortune: 'billionaire' })
+    expect(written).toEqual(['billionaire'])
+  })
+
+  it('rejects an unknown tier without writing anything', async () => {
+    const written: string[] = []
+    const route = createFortuneRoute(async (fortune) => { written.push(fortune) })
+
+    const response = await route.fetch(post({ fortune: 'trillionaire' }))
+
+    // 400 rather than a silent coercion: the picker must not be able to show a
+    // tier the profile does not hold.
+    expect(response.status).toBe(400)
+    expect(written).toEqual([])
+  })
+
+  it('rejects a body that is not JSON', async () => {
+    const route = createFortuneRoute(async () => { /* never reached */ })
+    const response = await route.fetch(new Request(`http://host${FORTUNE_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    }))
+
+    expect(response.status).toBe(400)
+  })
+
+  it('reports a failed write as an error rather than a success', async () => {
+    const route = createFortuneRoute(async () => { throw new Error('profile is read-only') })
+
+    const response = await route.fetch(post({ fortune: 'millionaire' }))
+
+    // The client keys its "saved" state off this: answering 200 here would let
+    // the radio claim a tier that was never persisted.
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'profile is read-only' })
+  })
+
+  it('reports the current tier alongside the days on the ledger route', async () => {
+    const root = await tempRoot()
+    const route = createWasteLedgerRoute(root, () => 'billionaire')
+
+    expect(await (await route.fetch(new Request('http://host'))).json()).toMatchObject({ fortune: 'billionaire' })
+  })
+
+  it('omits the tier when the host does not supply one', async () => {
+    const root = await tempRoot()
+    const route = createWasteLedgerRoute(root)
+
+    // Absent, not guessed: the picker renders "no selection" rather than a
+    // radio the burn may not be honouring.
+    expect(await (await route.fetch(new Request('http://host'))).json()).not.toHaveProperty('fortune')
+  })
+})
+
+describe('route wiring', () => {
+  /** A context double recording every route the plugin registers. */
+  function contextRecording(registered: { path: string; methods: readonly string[] }[]) {
+    const ctx = new Context()
+    const noop = (): (() => void) => () => {}
+    Object.defineProperty(ctx, 'effect', { value: noop, configurable: true })
+    Object.defineProperty(ctx, 'on', { value: noop, configurable: true })
+    Object.defineProperty(ctx, 'connection', {
+      value: {
+        fetch: {
+          register: (route: { path: string; methods: readonly string[] }) => {
+            registered.push({ path: route.path, methods: route.methods })
+            return async () => {}
+          },
+        },
+      },
+      configurable: true,
+    })
+    Object.defineProperty(ctx, 'fiber', { value: { entry: { id: 'i-am-rich' } }, configurable: true })
+    return ctx
+  }
+
+  it('registers the ledger as GET and the fortune write as POST', () => {
+    const registered: { path: string; methods: readonly string[] }[] = []
+    apply(contextRecording(registered), { enabled: true, discardedCopies: 1, fortune: 'millionaire' }, { root: '/tmp/i-am-rich-wiring' })
+
+    // The methods matter: a GET-only registration would leave the picker unable
+    // to save, and a POST on the ledger would break the poll.
+    expect(registered).toEqual([
+      { path: WASTE_LEDGER_PATH, methods: ['GET'] },
+      { path: FORTUNE_PATH, methods: ['POST'] },
+    ])
+  })
+
+  it('registers the fortune route even while burning is disabled', () => {
+    const registered: { path: string; methods: readonly string[] }[] = []
+    apply(contextRecording(registered), { enabled: false, discardedCopies: 1, fortune: 'millionaire' }, { root: '/tmp/i-am-rich-wiring' })
+
+    // Picking the cheaper tier is exactly what someone who paused spending
+    // wants to do, so the route must not disappear with `enabled: false`.
+    expect(registered.map(r => r.path)).toContain(FORTUNE_PATH)
   })
 })

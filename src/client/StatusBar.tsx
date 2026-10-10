@@ -16,8 +16,8 @@
 
 import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import type { LedgerStatus, WasteDockProps, WasteLedgerView } from './contracts.ts'
-import { WASTE_LEDGER_PATH } from './contracts.ts'
+import type { FortuneTier, FortuneWriteStatus, LedgerStatus, WasteDockProps, WasteLedgerView } from './contracts.ts'
+import { FORTUNE_PATH, FORTUNE_TIERS, WASTE_LEDGER_PATH } from './contracts.ts'
 import { sumPeriods, toMagnitude, type MagnitudeUnit } from '../waste.ts'
 import { COIN, type IAmRichKey } from './locales.ts'
 
@@ -44,6 +44,12 @@ export interface WasteStatusBarViewProps {
   readonly status: LedgerStatus
   /** Whether the row shows all three periods instead of today alone. */
   readonly expanded: boolean
+  /** The fortune tier the Host confirmed, when it reported one. */
+  readonly fortuneTier?: FortuneTier
+  /** How the last tier write ended. */
+  readonly fortuneStatus: FortuneWriteStatus
+  /** A tier was chosen in the picker; the wrapper persists it. */
+  readonly onFortune: (tier: FortuneTier) => void
   /** Pointer entered the row. */
   readonly onEnter: () => void
   /** Pointer left the row. */
@@ -62,6 +68,12 @@ export interface WasteStatusBarViewProps {
  * stay together and the panel renders exactly as many rows as it has periods.
  * The width pressure is handled by showing today's period alone at rest and
  * stacking the rest on hover, which is why no row has to overflow.
+ *
+ * The type scale and colours are transcribed from the account button this row
+ * sits directly above (`dsh-client-ui-settings-account`'s `AccountMenu`): the
+ * same 14px/22px type, the same 6px padding, and the same
+ * `--dsw-alias-label-primary`. The row is a peer of the user name, and it read
+ * as a dim caption while it was smaller (12px) and greyer than that.
  */
 const BAR: CSSProperties = {
   display: 'flex',
@@ -71,20 +83,27 @@ const BAR: CSSProperties = {
   gap: 8,
   width: '100%',
   minWidth: 0,
-  padding: '4px 8px 6px',
-  fontSize: 12,
-  lineHeight: '16px',
+  padding: '6px',
+  fontSize: 14,
+  lineHeight: '22px',
   fontVariantNumeric: 'tabular-nums',
   userSelect: 'none',
-  color: 'var(--dsw-text-secondary)',
+  color: 'var(--dsw-alias-label-primary, var(--dsw-text-secondary))',
 }
 
-/** The collapsed rail is 56px wide, so only the coin and one figure fit. */
+/**
+ * The collapsed rail: 56px wide, so only the coin and one figure fit.
+ *
+ * The label "今日浪费" is dropped here — it cannot fit in 56px — but the
+ * trailing "Token" stays: the rail still has to say *what* the figure counts,
+ * since a bare "2249万" with no unit reads as a money amount. The row is
+ * `nowrap` and centers, so the figure keeps its width rather than reflowing.
+ */
 const BAR_RAIL: CSSProperties = {
   ...BAR,
   justifyContent: 'center',
   gap: 5,
-  padding: '4px 0 6px',
+  padding: '6px 0',
 }
 
 /**
@@ -117,7 +136,7 @@ const BAR_EXPANDED_RAIL: CSSProperties = {
   ...BAR_EXPANDED,
   alignItems: 'center',
   justifyContent: 'center',
-  padding: '4px 0 6px',
+  padding: '6px 0',
 }
 
 const FIGURE: CSSProperties = {
@@ -128,19 +147,128 @@ const FIGURE: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
-const LABEL: CSSProperties = { opacity: 0.7 }
+/**
+ * The period label ("今日浪费").
+ *
+ * Full opacity and the account button's own label colour, not a faded one:
+ * at 0.7 opacity the label read as a dim caption next to the user name rather
+ * than the peer of it that it is. The figure beside it keeps the stronger
+ * `--dsw-text-primary`/500 weight, so the row still leads with the number.
+ */
+const LABEL: CSSProperties = { color: 'var(--dsw-alias-label-primary, inherit)' }
 
 const VALUE: CSSProperties = {
   color: 'var(--dsw-text-primary)',
   fontWeight: 500,
 }
 
-const UNIT: CSSProperties = { opacity: 0.7, fontSize: 11 }
+const UNIT: CSSProperties = { opacity: 0.7, fontSize: 12 }
 
-const COIN_STYLE: CSSProperties = { fontSize: 13, lineHeight: '18px' }
+/**
+ * The trailing "Token" naming what the figure counts.
+ *
+ * The magnitude unit alone (万 / 亿, or K / M / B) says how big the number is
+ * but not what it is a number *of*: "今日浪费 2249万" reads as a money amount,
+ * which is precisely the reading this bar exists to prevent. Naming the unit
+ * keeps the row honest about counting tokens.
+ *
+ * Separated from the magnitude by a leading margin of its own rather than by
+ * widening the row's shared `gap`, for the same reason the coin carries its own
+ * spacing: `gap` is shared by all four children, so raising it would re-space
+ * the whole row to fix one seam. Italic-free, but held at the dimmer `UNIT`
+ * weight because it is a noun label, not part of the number.
+ */
+const TOKEN_UNIT: CSSProperties = { opacity: 0.7, fontSize: 12, marginLeft: 4 }
+
+/**
+ * The coin, sized to the row's own type so it reads as part of the sentence.
+ *
+ * `1em` rather than a pixel value: the glyph then tracks the row's font size,
+ * so it stays the same size as the label it leads instead of drifting whenever
+ * the row is resized. `lineHeight` is left to inherit for the same reason.
+ *
+ * The extra `marginRight` widens the coin-to-label gap only. The row's own
+ * `gap` is shared by every child, so raising it would also push the label away
+ * from the figure and the figure away from its unit — three gaps widened to
+ * fix one. A margin on the glyph keeps that one seam deliberate, and it is the
+ * glyph's own spacing rather than a literal space inside {@link COIN}, so the
+ * character stays clean for the tooltip, for copying, and for tests.
+ */
+const COIN_STYLE: CSSProperties = { fontSize: '1em', marginRight: 3 }
+
+/**
+ * The fortune picker's own block, above the periods in the expanded panel.
+ *
+ * It sits inside the expanded panel rather than in the resting row because it
+ * is a control, not a figure: the resting row is a readout, and a set of radio
+ * buttons in it would compete with the number the row exists to show. A
+ * separator line is what keeps it from reading as a fourth period once the
+ * panel is open.
+ */
+const PICKER: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'flex-start',
+  gap: 2,
+  width: '100%',
+  paddingBottom: 4,
+  marginBottom: 2,
+  borderBottom: '1px solid var(--dsw-alias-border-subtle, rgb(128 128 128 / 25%))',
+}
+
+const PICKER_LEGEND: CSSProperties = { opacity: 0.7, fontSize: 12 }
+
+/**
+ * The row holding the two tier options side by side.
+ *
+ * A row of its own inside the picker's column: the legend and the status line
+ * belong on their own lines, but the two choices are a single either/or and
+ * read as one control only when they sit next to each other. It wraps rather
+ * than clips, so a narrow sidebar stacks them back into two lines instead of
+ * pushing the second option outside the column.
+ */
+const PICKER_OPTIONS: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'row',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 10,
+}
+
+const PICKER_OPTION: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 5,
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+
+/**
+ * The picker's status line.
+ *
+ * Present only while there is something to say (saving, saved, failed), so an
+ * idle panel does not carry a permanent line of reassurance. `saved` fades on
+ * the Host's confirmation rather than on the click, because the click alone
+ * does not mean the profile was written.
+ */
+const PICKER_STATUS: CSSProperties = { opacity: 0.7, fontSize: 12 }
 
 /** The periods the bar renders, in display order. */
 const PERIODS = ['today', 'month', 'total'] as const
+
+/**
+ * The copy each write outcome shows.
+ *
+ * An explicit table rather than a `fortune.${status}` template: the status
+ * values and the dictionary keys are not the same names (`error` reports
+ * `fortune.failed`), and a template would silently resolve to a missing key
+ * instead of failing to compile.
+ */
+const FORTUNE_STATUS_KEY: Record<Exclude<FortuneWriteStatus, 'idle'>, IAmRichKey> = {
+  saving: 'fortune.saving',
+  saved: 'fortune.saved',
+  error: 'fortune.failed',
+}
 
 /** One period's display key. */
 type PeriodKey = typeof PERIODS[number]
@@ -169,11 +297,18 @@ function unitKey(unit: MagnitudeUnit): IAmRichKey {
   return `unit.${unit}` as IAmRichKey
 }
 
-/** Narrow one polled ledger body into the view the bar renders. */
-function asLedger(value: unknown): WasteLedgerView | undefined {
+/**
+ * Narrow one polled ledger body into the view the bar renders.
+ *
+ * `fortune` is carried through only when it is a string; a Host that does not
+ * report one leaves it undefined, which the picker renders as "no selection"
+ * rather than as a guess.
+ */
+export function asLedger(value: unknown): WasteLedgerView | undefined {
   if (typeof value !== 'object' || value === null) return undefined
-  const days = (value as Partial<WasteLedgerView>).days
-  return typeof days === 'object' && days !== null ? { days } : undefined
+  const { days, fortune } = value as Partial<WasteLedgerView>
+  if (typeof days !== 'object' || days === null) return undefined
+  return typeof fortune === 'string' ? { days, fortune } : { days }
 }
 
 /**
@@ -203,7 +338,7 @@ function asLedger(value: unknown): WasteLedgerView | undefined {
  * @param props - the ledger, its poll status, and the expansion state.
  * @returns the status bar.
  */
-export function WasteStatusBarView({ wide, t, ledger, status, expanded, onEnter, onLeave }: WasteStatusBarViewProps) {
+export function WasteStatusBarView({ wide, t, ledger, status, expanded, fortuneTier, fortuneStatus, onFortune, onEnter, onLeave }: WasteStatusBarViewProps) {
   const translate = t as (key: IAmRichKey, params?: Record<string, unknown>) => string
 
   // Folded per render so a long-lived tab's periods follow the calendar.
@@ -263,6 +398,11 @@ export function WasteStatusBarView({ wide, t, ledger, status, expanded, onEnter,
     ? (wide ? BAR_EXPANDED : BAR_EXPANDED_RAIL)
     : resting
 
+  // The picker shows only in the wide expanded panel. In the 56px rail there is
+  // no room for a labelled radio group at all; showing it only on hover keeps
+  // the resting row a readout.
+  const showPicker = expanded && wide
+
   return (
     <span
       style={style}
@@ -271,12 +411,57 @@ export function WasteStatusBarView({ wide, t, ledger, status, expanded, onEnter,
       data-i-am-rich-wide={wide ? 'true' : 'false'}
       data-i-am-rich-expanded={expanded ? 'true' : 'false'}
       data-i-am-rich-status={status}
+      data-i-am-rich-fortune={fortuneTier ?? ''}
+      data-i-am-rich-fortune-status={fortuneStatus}
       role="status"
       aria-label={translate('waste.aria')}
       title={tooltip}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
     >
+      {showPicker && (
+        // `onClick` stops here so choosing a tier neither collapses the panel
+        // nor reaches the shell's own foot handlers behind it.
+        <span
+          style={PICKER}
+          data-i-am-rich-picker
+          role="radiogroup"
+          aria-label={translate('fortune.legend')}
+          onClick={event => { event.stopPropagation() }}
+        >
+          <span style={PICKER_LEGEND}>{translate('fortune.legend')}</span>
+          <span style={PICKER_OPTIONS}>
+            {FORTUNE_TIERS.map(tier => (
+              <label
+                key={tier}
+                style={PICKER_OPTION}
+                data-i-am-rich-tier={tier}
+                data-selected={fortuneTier === tier ? 'true' : 'false'}
+                title={translate(`fortune.hint.${tier}` as IAmRichKey)}
+              >
+                <input
+                  type="radio"
+                  name="i-am-rich-fortune"
+                  value={tier}
+                  checked={fortuneTier === tier}
+                  disabled={fortuneStatus === 'saving'}
+                  onChange={() => { onFortune(tier) }}
+                  style={{ margin: 0 }}
+                />
+                <span>{translate(`fortune.${tier}` as IAmRichKey)}</span>
+              </label>
+            ))}
+          </span>
+          {/* The status line reports the write, not the wish: it is fed by the
+              Host's confirmation, so a failed save leaves the radio on the tier
+              that is actually in effect. */}
+          {fortuneStatus !== 'idle' && (
+            <span style={PICKER_STATUS} data-i-am-rich-fortune-message={fortuneStatus}>
+              {translate(FORTUNE_STATUS_KEY[fortuneStatus])}
+            </span>
+          )}
+        </span>
+      )}
       {shown.map(period => (
         // Each row carries its own coin. Repeating the glyph per period is what
         // makes a stacked panel read as three separate figures rather than one
@@ -286,6 +471,7 @@ export function WasteStatusBarView({ wide, t, ledger, status, expanded, onEnter,
           {showLabel && <span style={LABEL}>{translate(`period.${period}` as IAmRichKey)}</span>}
           <span style={VALUE}>{figures[period].value}</span>
           <span style={UNIT}>{translate(unitKey(figures[period].unit))}</span>
+          <span style={TOKEN_UNIT}>{translate('waste.unit')}</span>
         </span>
       ))}
     </span>
@@ -314,19 +500,39 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
   const [expanded, setExpanded] = useState(false)
   const [ledger, setLedger] = useState<WasteLedgerView | undefined>(undefined)
   const [status, setStatus] = useState<LedgerStatus>('loading')
+  const [fortuneStatus, setFortuneStatus] = useState<FortuneWriteStatus>('idle')
+  // The confirmed tier lives in state, not a ref: a ref mutated during the
+  // poll's steady state (`status` already 'ok') would not re-render — React
+  // bails out on an unchanged `Object.is` — and the radio could show a stale
+  // tier for up to one poll interval.
+  const [fortuneTier, setFortuneTier] = useState<FortuneTier | undefined>(undefined)
   const alive = useRef(true)
+  // Monotonic write generation. A poll that started before the current write
+  // began carries the tier as it was *then*; adopting its answer would revert
+  // the radio behind the write's back. Each poll captures the generation at
+  // its start and only adopts the Host's tier while it is still current — and
+  // `chooseFortune` reads it the same way, so a *write* that was overtaken by a
+  // later one cannot move the radio either.
+  const writeSeq = useRef(0)
 
   useEffect(() => {
     alive.current = true
+
     const controller = new AbortController()
 
     const poll = async (): Promise<void> => {
+      const seqAtStart = writeSeq.current
       try {
         const response = await fetch(WASTE_LEDGER_PATH, { signal: controller.signal })
         if (!response.ok) throw new Error(`ledger route answered ${String(response.status)}`)
         const body: unknown = await response.json()
         if (!alive.current) return
-        setLedger(asLedger(body))
+        const next = asLedger(body)
+        setLedger(next)
+        // A poll that started before the current write began carries the tier
+        // as it was *then*; adopting its answer would revert the radio behind
+        // the write's back, so the generation is re-tested on arrival.
+        if (writeSeq.current === seqAtStart && isFortuneTier(next?.fortune)) setFortuneTier(next.fortune)
         setStatus('ok')
       } catch {
         if (!alive.current || controller.signal.aborted) return
@@ -348,14 +554,62 @@ export function WasteStatusBar(props: WasteStatusBarProps) {
     }
   }, [])
 
+  /**
+   * Persist one tier and reflect the Host's answer.
+   *
+   * The radio does not move on the click: `fortuneTier` is advanced only after
+   * the Host accepts the write, so a rejected save leaves the picker showing
+   * the tier the burn is actually using rather than the one that was asked
+   * for. A failed write is reported, never silently kept. The generation is
+   * bumped at write *start*, so a poll already in flight cannot overwrite the
+   * answer with the pre-write tier.
+   *
+   * A write that a later one overtook is discarded on arrival for the same
+   * reason: `disabled` on the radios keeps a second click out of a normal
+   * pointer path, but it only applies once the `'saving'` render has committed,
+   * so two writes can still overlap. Without the generation test the slower —
+   * and older — response would win the radio, which is how the picker ends up
+   * naming a tier the burn is no longer using.
+   */
+  const chooseFortune = async (tier: FortuneTier): Promise<void> => {
+    writeSeq.current += 1
+    setFortuneStatus('saving')
+    try {
+      const response = await fetch(FORTUNE_PATH, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fortune: tier }),
+      })
+      if (!response.ok) throw new Error(`fortune route answered ${String(response.status)}`)
+      if (!alive.current) return
+      setFortuneTier(tier)
+      setFortuneStatus('saved')
+    } catch {
+      if (!alive.current) return
+      setFortuneStatus('error')
+    }
+  }
+
   return (
     <WasteStatusBarView
       {...props}
       ledger={ledger}
       status={status}
       expanded={expanded}
+      fortuneTier={fortuneTier}
+      fortuneStatus={fortuneStatus}
+      onFortune={tier => { void chooseFortune(tier) }}
       onEnter={() => setExpanded(true)}
       onLeave={() => setExpanded(false)}
     />
   )
+}
+
+/**
+ * Whether a wire value names a known tier.
+ * @param value - the tier reported by the Host, if any.
+ * @returns whether the value is one this client can render.
+ */
+function isFortuneTier(value: unknown): value is FortuneTier {
+  return typeof value === 'string' && (FORTUNE_TIERS as readonly string[]).includes(value)
 }

@@ -44,7 +44,7 @@ one model request
                      │
                      └─> records the usage the provider reported for it
                               │
-                              └─> sidebar foot (above the user name): 🪙 Wasted today 120 / Wasted this month 1200 / Wasted all time 8400
+                              └─> sidebar foot (above the user name): 💰 Wasted today 120 tokens / Wasted this month 1200 tokens / Wasted all time 8400 tokens
 ```
 
 Both copies are **real, billed provider requests**. Nothing is simulated or estimated: the second request goes over the network, the provider bills for it, and its content is dropped.
@@ -86,6 +86,7 @@ The `id` must be `i-am-rich`: the runtime id changed with the rename, so a `rich
 | --- | --- | --- | --- |
 | `enabled` | boolean | `true` | Whether requests are duplicated. Turning it off leaves the plugin loaded and the status bar live, but stops spending. |
 | `discardedCopies` | number | `1` | How many extra copies to discard per request. `1` sends twice and throws one away. |
+| `fortune` | `millionaire` \| `billionaire` | `millionaire` | The fortune tier, which decides how expensive the discarded copy is. See below. |
 
 ```yaml
 - id: i-am-rich
@@ -93,7 +94,39 @@ The `id` must be `i-am-rich`: the runtime id changed with the rename, so a `rich
   config:
     enabled: true
     discardedCopies: 1
+    fortune: millionaire
 ```
+
+### Fortune tiers: millionaire / billionaire
+
+The two tiers differ not in *how many* copies are sent but in whether the second request's prompt **prefix** matches the first — that is, whether it can ride the provider's prompt cache.
+
+| Tier | The second request | Cache | Billing |
+| --- | --- | --- | --- |
+| Millionaire | **Identical** to the original (the same request object) | Usually hits | Cache **read** rate (cheap) |
+| Billionaire | A **current timestamp** written into the head of the system prompt | Always **misses** | Cache **write** rate (far more expensive) |
+
+**Why the prefix decides the price:** a provider's prompt cache matches on the **prefix**. When two requests share a byte-identical prefix, the second reuses the cache entry the first wrote and is billed at the cache-read rate; change the leading text and the whole prefix fails to match, so the second request is billed as a fresh cache **write** — the input side goes from discounted to premium, and that is the mechanism that makes the billionaire tier cost more. A timestamp satisfies this by construction: **every dispatch differs**, so even two duplicates of the same request cannot share a cache entry.
+
+**The stamp goes into the existing system prompt, adding no message.** That is the load-bearing trade. The earlier shape **inserted a prefix message** at the front of `messages`, which meant rebuilding the entire `messages` array on every dispatch — and that array carries the whole conversation, making it the single largest object in a request once a session is long (~11.6 MB for 3000 messages, measured). Writing one line into the head of the existing system message instead leaves the message count identical and reuses every other message **by object identity**. On the same payload, constructing 200 dispatches dropped from 3.6ms to 0.6ms.
+
+**Injection must clone, never mutate.** A loop-built `GenerateOptions.messages` arrives **deep-frozen** (`freezeMessage` in `dsh-llm` does `deepFreeze(structuredClone(...))`), so writing into the caller's array would throw outright — and would edit the request the **real turn** is using. The billionaire tier therefore clones the request and replaces only that one system message, leaving the original bit-for-bit unchanged (a test asserts exactly that). The system message's `id`/`source` and any non-text blocks are carried over; only the leading text block is rewritten.
+
+**A request with no system message degrades honestly.** A system-role entry must be a **durable** `Message` carrying an `id` and a `source` (only `role: 'user'` may be the identity-free one-shot `RequestUserInput`), and minting a durable identity for a throwaway copy is precisely what this plugin must not do. Such a request therefore falls back to sending the second copy unchanged — **still a real billed call**, only with the cache hitting. That is reported honestly rather than pretended. Loop-built requests always carry a system message, so this is the hand-built one-shot shape, not the normal path.
+
+**That requires a re-entrancy guard.** Making the prefix take effect means re-dispatching a different request object, and `next()` accepts no argument (it only replays the one it closed over), so the only route is `ctx.llm.stream()` — which passes through the `llm/stream` waterfall again and re-enters this plugin's own listener. The plugin therefore marks its own dispatch in a module-level **`WeakSet`**, keyed by object identity: the stamped clone is registered before dispatch, and the listener passes its own duplicates straight through without duplicating, since otherwise it would recurse forever. Identity rather than a global flag, because a flag is only correct under the timing assumption that the nested dispatch re-enters the listener synchronously — precisely the most fragile assumption inside a real harness. An identity marker has no timing dependency at all: the clone is recognized whenever and however it re-enters, concurrent requests each mark their own clone, and originals can never match because identity is unique. Tests run in the realistic shape (`llm` provided through the service registry, its `stream` re-running the waterfall) and assert the stamped clone reaches the inner dispatch exactly once and the original request object stays untouched.
+
+**Graceful degradation without an `llm` service.** The prefix cannot be injected, so the plugin falls back to sending the second copy unchanged — **still a real billed call**, only without the prefix. That is reported honestly rather than pretended.
+
+**The tier is selected at the top of the bar's expanded panel** as a radio group (Millionaire / Billionaire), with a tooltip explaining the mechanism.
+
+In the layout, the "Fortune" legend and the two options occupy separate lines, while **the two options themselves sit side by side on one row**: they are a single either/or, and they read as one control only when adjacent. That row uses `flex-wrap: wrap` rather than `nowrap`, so a very narrow sidebar **stacks them onto two lines** instead of pushing "Billionaire" out of the column. The save status is a third line, present only when there is something to say.
+
+The selection does **not** move on the click: the radio advances only once the Host confirms the write succeeded. On failure it stays on the tier **actually in effect** and says "Could not save; still on the previous tier" — a display that disagrees with the real behavior is exactly what this plugin exists to prevent.
+
+The choice is written to the profile's `cordis.patch.yml` (through DSH's official `ctx.configEditor.edit`, which locks the document, validates, and rolls back on failure), so it **survives a restart**. Only the `fortune` field is changed; every other setting — including `discardedCopies`, which is real money — is preserved.
+
+`configEditor` is deliberately **not** in `inject`: cordis withholds `apply` until an injected service exists, so declaring it would make a harness without the editor lose the duplication and the ledger entirely. It is read through `ctx.get()` instead — available when present, and the plugin works either way, with only the tier failing to persist.
 
 ## How the numbers are computed
 
@@ -102,6 +135,9 @@ Every figure in the status bar is **usage the provider itself reported**. Nothin
 - Only discards whose provider reported `usage` contribute tokens.
 - A discard the provider did not price is counted separately as an unpriced call, and **claims no tokens**.
 - A duplicate that failed mid-stream after reporting usage still contributes that usage, because the money was really spent.
+- **Cache tokens are excluded from the displayed figure, which counts exactly two numbers: cache-miss input plus generated output.**
+  Cache hits are billed at the provider's steep discount — often an order of magnitude below a fresh input token — so a duplicate that rode the warm prompt cache (the entire point of the `millionaire` tier) costs next to nothing per token; a cache write is the input prefix itself being parked, not anything new the duplicate produced. Counting either would inflate the number without representing real extravagance.
+  All four buckets are still recorded in the ledger in full — this is a presentation choice; the record itself remains the complete, honest provider-reported usage.
 
 Totals are bucketed by local calendar day. The day is stamped when the Host appends the record, so **replay produces exactly the figures seen live** and does not depend on a clock at read time.
 
@@ -119,31 +155,41 @@ The status bar shows three figures side by side:
 
 The boundaries are covered by tests: a month rollover (`2025-12-31` is not part of this month), a year rollover (the same month and day last year is not "today"), and a malformed day key — which contributes only to the all-time figure and can never inflate a period it does not belong to.
 
-### Display format: a coin, and 万 / 亿
+### Display format: a money bag, and 万 / 亿
 
-The bar opens with a coin, and each period is abbreviated to a magnitude the reader can take in at a glance.
+The bar opens with a money bag, and each period is abbreviated to a magnitude the reader can take in at a glance.
 
-**Only today's period shows by default; hovering expands it into three rows, each with its own coin:**
+**Only today's period shows by default; hovering expands it into three rows, each with its own money bag:**
 
 ```
-at rest:  🪙 Wasted today 31.11M
+at rest:  💰 Wasted today 31.11Mtokens
 
-hovered:  🪙 Wasted today 31.11M
-          🪙 Wasted this month 31.11M
-          🪙 Wasted all time 31.11M
+hovered:  💰 Wasted today 31.11Mtokens
+          💰 Wasted this month 31.11Mtokens
+          💰 Wasted all time 31.11Mtokens
 ```
 
 Why today alone at rest: the seat is the sidebar foot above the user name, so the available width is the sidebar's **264–420px (280 by default)**, while three labelled periods on **one line** need roughly **330px** — they simply do not fit at the default width. So the resting state gives one period and hands the detail to hover.
 
 **The expansion is three stacked rows, not one row of three columns**, and width is why: one period per row means the panel only needs the width of its longest single row, so it stays inside the sidebar column. Laid out side by side it would have to size to its content (~330px) and hang outside the sidebar. The expanded panel is therefore `flex-direction: column` with `width: 100%`, lifted out of the flow (`position: relative` plus a background and shadow) so it covers the account button below instead of shoving it around on every hover.
 
-**The coin is rendered once per row**, not shared by the panel: three rows with three coins read as three separate figures rather than one wrapped sentence.
+**The money bag is rendered once per row**, not shared by the panel: three rows with three bags read as three separate figures rather than one wrapped sentence.
 
 **Every row is `flex-wrap: nowrap`**, so a row never breaks internally — three rows stay three rows, never four.
 
 Hover expansion uses React state (`onMouseEnter` / `onMouseLeave`) rather than a CSS `:hover` rule: **how many periods render is a render decision**, and a selector can restyle a node but cannot conjure the month and all-time `span`s. It also matches what the shell's own foot controls (the account menu) do.
 
-The **collapsed** sidebar is 56px, a width limit that hovering cannot relieve, so the rail **always** shows just `🪙 31.11M` (the label goes too); all three exact counts remain in the tooltip. Wide vs rail is readable from `data-i-am-rich-wide`, and resting vs expanded from `data-i-am-rich-expanded`.
+The **collapsed** sidebar is 56px, a width limit that hovering cannot relieve, so the rail **always** shows just `💰 31.11Mtokens` (the "Wasted today" label goes too); all three exact counts remain in the tooltip. Wide vs rail is readable from `data-i-am-rich-wide`, and resting vs expanded from `data-i-am-rich-expanded`.
+
+**The type scale and colours match the user name directly below.** The bar sits immediately above the account button (avatar plus user name), and the two read as a pair: both are `font-size: 14px` / `line-height: 22px`, both use `6px` padding, and both use `--dsw-alias-label-primary`. These values are not estimates — they are transcribed rule by rule from the `AccountMenu` styles in `dsh-client-ui-settings-account`, the package that owns the account button.
+
+The reason for the change is that the bar was **too small and too grey**: 12px, `--dsw-text-secondary`, with the label further dimmed by `opacity: 0.7`. "Wasted today" read as a caption rather than a peer of the user name — and it is not a caption; it is a permanent control in the same column, exactly like the user name.
+
+The money bag uses `font-size: 1em` rather than a fixed pixel value: the glyph then follows the row's font size, so **the icon and the label stay the same size** and cannot drift apart if the bar's type is ever resized. The figure itself keeps `--dsw-text-primary` and `font-weight: 500`, so within a row the number still leads and the label follows — the hierarchy is not flattened.
+
+**The glyph is 💰 (money bag), not 🪙.** U+1FA99 is literally named COIN, but Apple renders it as a **pale, silver-toned generic coin** that reads as a token rather than as money. U+1F4B0 is unmistakably gold on the same font, which is what the "rich person" theme calls for.
+
+**The gap between the glyph and the text is a `marginRight` on the icon, not a character in the string.** The row's `gap` is shared by every child, so widening it would push the label away from the figure and the figure away from its unit as well — three gaps changed to fix one. The spacing therefore lives on the icon's own `marginRight`, and it is deliberately not a trailing space inside `COIN`, so the tooltip, a copied figure, and a test reading the text all get a clean glyph.
 
 **Each label spells out that the figure is waste; a bare "Today" is not enough.** The bar reports **the discarded copy**, not total spend, and `Today 31.11M` reads as consumption — the exact opposite of what this plugin isolates. So all three labels are full phrases: 今日浪费 / 本月浪费 / 累计浪费 in Chinese, `Wasted today` / `Wasted this month` / `Wasted all time` in English. A test asserts the word is present for every period, so it cannot be shortened back. The resting row keeps the full label too — what changes with hover is the number of periods, not the wording. The collapsed rail is the one exception, where even the label does not fit.
 
@@ -155,6 +201,8 @@ The **collapsed** sidebar is 56px, a width limit that hovering cannot relieve, s
 | ≥ 1 billion | B | `2.5B` |
 
 The rule is **always the largest unit that fits**, rather than a fixed "billions + millions" pair — that would spell 31 million as the awkward `0B31M`. Rounding happens once, on the way out, and may **carry a figure up into the next unit**: `999,999,999` shows as `1B`, not `1000M`.
+
+**The magnitude unit is followed by the word `tokens`.** K/M/B says how *big* the number is, not what it is a number *of*: `Wasted today 31.11M` reads as a money amount, which is exactly the misreading this plugin exists to prevent, so the thing being counted is named. It comes from the `waste.unit` dictionary key (`Token` in Chinese, `tokens` in English) and **always shows** — including in the 56px rail, where the "Wasted today" label is dropped but `tokens` stays, since a bare `💰 31.11M` would read as money again. It is separated from the magnitude by a dedicated `marginLeft`, for the same reason the money bag carries its own spacing: the row's `gap` is shared by every child.
 
 Scaling affects the bar only. Hovering reveals the **exact integers** with thousands separators, because scaling is a presentation choice and the ledger is the record:
 

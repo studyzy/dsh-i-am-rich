@@ -48,7 +48,20 @@ describe('waste ledger', () => {
       cacheReadTokens: 30,
       cacheWriteTokens: 7,
     })
-    expect(totalTokens(twice)).toBe(163)
+    // The displayed figure counts exactly two things — cache-miss input and
+    // generated output. Cache reads (steep discount) and cache writes (the
+    // input prefix being parked) are excluded from the waste number, even
+    // though the buckets themselves stay recorded.
+    expect(totalTokens(twice)).toBe(126)
+  })
+
+  it('excludes cache tokens from the displayed total', () => {
+    const totals = addWaste(EMPTY_TOTALS, waste({
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 5000, cacheWriteTokens: 3000, totalTokens: 8000 },
+    }))
+
+    // Cheap cache reads and the parked prefix must not dress up as extravagance.
+    expect(totalTokens(totals)).toBe(0)
   })
 
   it('counts an unpriced discard without claiming tokens for it', () => {

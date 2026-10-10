@@ -93,6 +93,24 @@ function contextWith(): Context {
 
 const OPTIONS: GenerateOptions = { provider: 'test', model: 'test-model', messages: [] }
 
+/**
+ * A request shaped like a loop-built one, which is what the billionaire tier
+ * needs in order to stamp anything.
+ *
+ * The stamp goes into the head of the existing system message, so a request
+ * without one cannot carry a prefix at all — the tier falls back to the
+ * verbatim copy there, by design. Cases that mean to exercise the stamped
+ * duplicate must therefore dispatch this shape rather than {@link OPTIONS}.
+ */
+const SYSTEM_OPTIONS: GenerateOptions = {
+  provider: 'test',
+  model: 'test-model',
+  messages: [
+    { role: 'system', id: 'sys-1', source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'be brief' }] },
+    { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+  ] as GenerateOptions['messages'],
+}
+
 describe('i-am-rich duplicate burn', () => {
   it('invokes the underlying adapter twice while forwarding only the original stream', async () => {
     const ctx = contextWith()
@@ -243,5 +261,125 @@ describe('i-am-rich duplicate burn', () => {
 
     const lines = await ledgerLines()
     expect(lines[0]).toMatchObject({ usage: USAGE })
+  })
+})
+
+describe('i-am-rich fortune tiers', () => {
+  it('dispatches the billionaire duplicate with a stamped system prompt, through a real second call', async () => {
+    const ctx = contextWith()
+    // A stub `llm` service is what the nested dispatch goes through; the
+    // waterfall re-entry is the behavior under test, not a detail.
+    const seen: GenerateOptions[] = []
+    const llm = {
+      stream: (options: GenerateOptions) => {
+        seen.push(options)
+        return (async function * () { yield * scripted(USAGE) })()
+      },
+    }
+    ;(ctx as unknown as { llm: typeof llm }).llm = llm
+    apply(ctx, { enabled: true, discardedCopies: 1, fortune: 'billionaire' }, internals())
+
+    let adapterCalls = 0
+    const original = { ...OPTIONS, messages: [
+      { role: 'system', content: [{ type: 'text', text: 'be brief' }] },
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    ] } as GenerateOptions
+    const chunks: StreamChunk[] = []
+    for await (const chunk of ctx.waterfall(ctx, 'llm/stream', original, () => {
+      adapterCalls += 1
+      return (async function * () { yield * scripted(USAGE) })()
+    })) chunks.push(chunk)
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(1) })
+
+    // The original still went out once through the continuation...
+    expect(adapterCalls).toBe(1)
+    // ...and the duplicate went out through the nested dispatch, stamped.
+    expect(seen).toHaveLength(1)
+    const duplicate = seen[0]
+    expect(duplicate).toBeDefined()
+    // The stamp rides in the existing system message's head, so the message
+    // count is unchanged: no extra message was inserted for the duplicate.
+    expect(duplicate!.messages).toHaveLength(original.messages.length)
+    const system = duplicate!.messages[0]!
+    expect(system.role).toBe('system')
+    expect(system.content[0]).toMatchObject({ type: 'text' })
+    expect((system.content[0] as { text: string }).text).toContain('[i-am-rich]')
+    // The original prompt text is still behind the stamp.
+    expect(system.content[1]).toEqual({ type: 'text', text: 'be brief' })
+  })
+
+  it('does not duplicate the duplicate when the nested dispatch re-enters the waterfall', async () => {
+    const ctx = contextWith()
+    let nestedCalls = 0
+    const llm = {
+      stream: (options: GenerateOptions) => {
+        nestedCalls += 1
+        // Re-enter the real waterfall, exactly as the harness's own `llm.stream`
+        // does; the guard is what must stop the recursion here.
+        return ctx.waterfall(ctx, 'llm/stream', options, () => (async function * () { yield * scripted(USAGE) })())
+      },
+    }
+    ;(ctx as unknown as { llm: typeof llm }).llm = llm
+    apply(ctx, { enabled: true, discardedCopies: 1, fortune: 'billionaire' }, internals())
+
+    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', SYSTEM_OPTIONS, () => (async function * () { yield * scripted(USAGE) })())) { /* drain */ }
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(1) })
+
+    // Exactly one nested dispatch: the re-entrant listener passed through.
+    expect(nestedCalls).toBe(1)
+  })
+
+  it('falls back to the continuation when the harness has no llm service', async () => {
+    const ctx = contextWith()
+    apply(ctx, { enabled: true, discardedCopies: 1, fortune: 'billionaire' }, internals())
+
+    let adapterCalls = 0
+    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => {
+      adapterCalls += 1
+      return (async function * () { yield * scripted(USAGE) })()
+    })) { /* drain */ }
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(1) })
+
+    // Still two real calls — the burn is not silently skipped just because the
+    // prefix could not be applied.
+    expect(adapterCalls).toBe(2)
+    expect(await ledgerLines()).toHaveLength(1)
+  })
+})
+
+describe('i-am-rich fortune concurrency', () => {
+  it('duplicates every one of several in-flight requests without cross-talk', async () => {
+    // The re-entrancy guard is a module-level flag, so this is the case that
+    // would break if it were ever held across an await: one request's nested
+    // dispatch would silence another request's duplication.
+    const ctx = contextWith()
+    let nestedCalls = 0
+    const llm = {
+      stream: (_options: GenerateOptions) => {
+        nestedCalls += 1
+        return (async function * () { yield * scripted(USAGE) })()
+      },
+    }
+    ;(ctx as unknown as { llm: typeof llm }).llm = llm
+    apply(ctx, { enabled: true, discardedCopies: 1, fortune: 'billionaire' }, internals())
+
+    let adapterCalls = 0
+    const run = async (): Promise<StreamChunk[]> => {
+      const out: StreamChunk[] = []
+      for await (const chunk of ctx.waterfall(ctx, 'llm/stream', SYSTEM_OPTIONS, () => {
+        adapterCalls += 1
+        return (async function * () { yield * scripted(USAGE) })()
+      })) out.push(chunk)
+      return out
+    }
+
+    const results = await Promise.all([run(), run(), run()])
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(3) })
+
+    // Three originals and three prefixed duplicates, and every caller still got
+    // its own untouched stream.
+    expect(adapterCalls).toBe(3)
+    expect(nestedCalls).toBe(3)
+    for (const chunks of results) expect(chunks).toEqual(scripted(USAGE))
   })
 })
