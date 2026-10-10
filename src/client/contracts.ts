@@ -17,9 +17,9 @@
 /** A component the slot renderer can mount. */
 export type SlotComponent<P> = (props: P) => unknown
 
-/** The discarded-usage ledger this plugin's Host half publishes per session. */
+/** The discarded-usage ledger served by the Host's `/api` route. */
 export interface WasteLedgerView {
-  /** Every day the session recorded discarded usage on, keyed `YYYY-MM-DD`. */
+  /** Every day the ledger recorded discarded usage on, keyed `YYYY-MM-DD`. */
   readonly days: Record<string, WasteTotals>
 }
 
@@ -33,24 +33,22 @@ export interface WasteTotals {
   readonly cacheWriteTokens: number
 }
 
-/** One session's projection values, keyed by registered projection key. */
-export interface SessionLike {
-  readonly projectionValues?: Record<string, unknown> | undefined
-  /**
-   * How many surfaces currently retain this session, by surface name.
-   *
-   * The sidebar is a root-scope slot and receives no `sessionId`, so the bar
-   * identifies the session the main view is showing by this counter alone.
-   * `mainView > 0` is the shell's own idiom for "this is the active session",
-   * used verbatim by `ui-layout`'s document-title projection.
-   */
-  readonly retainedBy?: Record<string, number | undefined> | undefined
-}
+/**
+ * The exact route the bar polls for the ledger.
+ *
+ * Spelled out here rather than imported from the Host half: the client bundle
+ * must not pull Node-side modules into the browser build.
+ */
+export const WASTE_LEDGER_PATH = '/api/i-am-rich/waste'
 
-/** State shape the session store exposes to `useSessions` selectors. */
-export interface SessionsState {
-  readonly byId: Record<string, SessionLike | undefined>
-}
+/** How the last poll of the ledger route ended. */
+export type LedgerStatus =
+  /** No answer yet; the bar shows zeroes until the first one lands. */
+  | 'loading'
+  /** The latest poll succeeded; `ledger` is its answer. */
+  | 'ok'
+  /** The latest poll failed; `ledger` holds the last good answer, if any. */
+  | 'error'
 
 /**
  * The slot this bar registers into.
@@ -110,20 +108,8 @@ export interface LocaleService {
   register(namespace: string, dictionaries: { zh: Record<string, string>; en: Record<string, string> }): () => void
 }
 
-/** Session events observed by the React hook the status bar selects over. */
-export interface SessionsHook {
-  /**
-   * Select a value derived from the session store.
-   * @param selector - pure derivation over the store state.
-   * @returns the selected value.
-   */
-  <T>(selector: (state: SessionsState) => T): T
-}
-
 /** Props the shell supplies to a `sidebar.footer.action` contribution. */
 export interface WasteDockProps {
-  /** Standing seat: the session store hook. */
-  readonly useSessions: SessionsHook
   /**
    * Owner share: whether the sidebar renders wide content.
    *

@@ -1,34 +1,37 @@
 /**
  * Behavior of the i-am-rich duplicate burn: each intercepted model call must
- * dispatch a real second request, discard its chunks, and record the
- * duplicate's own provider usage as durable waste.
+ * dispatch a real second request, discard its chunks, and append the
+ * duplicate's own provider usage to the standalone ledger file.
  */
 
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { GenerateOptions, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm/types'
-import { apply } from '../src/index.ts'
-import { resetWasteRecordCapability } from '../src/records.ts'
-import { WASTE_RECORD_TYPE, type LlmWasteEventData } from '../src/types.ts'
+import { closeLedgerHandles, ledgerMonthPath } from '../src/ledger-file.ts'
+import { apply, type IAmRichInternals } from '../src/index.ts'
+import type { LlmWasteEventData } from '../src/types.ts'
 
 const USAGE: TokenUsage = { inputTokens: 100, outputTokens: 20, totalTokens: 120 }
 
 /**
- * Records the session doubles handed to the harness's plugin-record API.
+ * The failure a ledger append should reject with, when any.
  *
- * The write path feature-detects `appendPluginRecord` on the session module,
- * so these cases control that export directly: an implementation models a
- * harness new enough to have it, and `undefined` models one too old to.
+ * The write path is fire-and-forget, so these cases inject failure at the
+ * module seam rather than simulating a broken disk.
  */
-const harness = vi.hoisted(() => ({
-  appendPluginRecord: undefined as ((session: unknown, type: string, data: unknown) => number) | undefined,
-}))
+const ledger = vi.hoisted(() => ({ failure: undefined as Error | undefined }))
 
-vi.mock('@deepseek-ai/dsh-session', () => ({
-  get appendPluginRecord() {
-    return harness.appendPluginRecord
-  },
-}))
+vi.mock('../src/ledger-file.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ledger-file.ts')>()
+  return {
+    ...actual,
+    appendLedgerEntry: (root: string, data: Parameters<typeof actual.appendLedgerEntry>[1]) =>
+      ledger.failure !== undefined ? Promise.reject(ledger.failure) : actual.appendLedgerEntry(root, data),
+  }
+})
 
 /** A scripted stream that reports `usage` before its terminal finish. */
 function scripted(usage: TokenUsage): StreamChunk[] {
@@ -41,81 +44,59 @@ function scripted(usage: TokenUsage): StreamChunk[] {
   ]
 }
 
-interface Appended {
-  readonly type: string
-  readonly data: unknown
-}
+/** The ledger root under test, replaced per test and removed afterwards. */
+let root: string
 
-/**
- * Minimal session double standing in for the harness Session.
- *
- * `append` is deliberately absent: the plugin must never reach for a bare
- * `Session.append`, because that path cannot set the `ignorable` marker an
- * unknown event type requires. Reaching for it is a hard failure here.
- */
-function fakeSession(events: Appended[]) {
-  return {
-    events,
-    append: () => { throw new Error('the plugin must not call a bare Session.append') },
-  }
-}
-
-/**
- * Model a harness that supports plugin records.
- *
- * Each call is routed to the appended-events list of the session it targets,
- * reproducing the harness contract that `appendPluginRecord(session, type,
- * data)` writes into that session's log.
- */
-function supportPluginRecords(): void {
-  harness.appendPluginRecord = (session: unknown, type: string, data: unknown) => {
-    const target = session as { events: Appended[] }
-    target.events.push({ type, data })
-    return target.events.length
-  }
-}
-
-/** Model a harness too old to expose the plugin-record API. */
-function withholdPluginRecords(): void {
-  harness.appendPluginRecord = undefined
-}
-
-beforeEach(() => {
-  supportPluginRecords()
-  resetWasteRecordCapability()
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), 'i-am-rich-'))
 })
 
-afterEach(() => {
-  resetWasteRecordCapability()
+afterEach(async () => {
+  ledger.failure = undefined
+  await closeLedgerHandles()
+  await rm(root, { recursive: true, force: true })
   vi.restoreAllMocks()
 })
 
+/** Hooks pinning day and identity so appended lines are deterministic. */
+const INTERNALS: IAmRichInternals = {
+  newId: () => 'w-fixed',
+  now: () => new Date(2026, 0, 5, 12, 0, 0),
+  root: undefined,
+}
+
+/** Internals bound to the current test's ledger root. */
+function internals(overrides: Partial<IAmRichInternals> = {}): IAmRichInternals {
+  return { ...INTERNALS, root, ...overrides }
+}
+
+/** Every discard line appended to this test's ledger, in order. */
+async function ledgerLines(month = '2026-01'): Promise<LlmWasteEventData[]> {
+  try {
+    const text = await readFile(ledgerMonthPath(root, month), 'utf8')
+    return text.split('\n').filter(line => line !== '').map(line => JSON.parse(line) as LlmWasteEventData)
+  } catch {
+    return []
+  }
+}
+
 /**
- * Build a context whose `agents` registry reports exactly the given sessions.
+ * Build a bare plugin context.
  *
- * `sessionProjections` is stubbed because the plugin registers its ledger
- * projection at load; these cases exercise the burn, not the fold.
- * @param sessions - live sessions the registry should expose.
- * @param initiator - agent reported as the inherited initiator, when any.
+ * No `connection` service is provided: these cases exercise the burn and the
+ * file ledger, and the route registers through a warned no-op here.
  * @returns the plugin context under test.
  */
-function contextWith(sessions: readonly unknown[], initiator?: unknown): Context {
-  const ctx = new Context()
-  ctx.reflect.provide('agents', {
-    list: () => sessions,
-    currentInitiator: () => initiator,
-  })
-  ctx.reflect.provide('sessionProjections', { register: () => () => {} })
-  return ctx
+function contextWith(): Context {
+  return new Context()
 }
 
 const OPTIONS: GenerateOptions = { provider: 'test', model: 'test-model', messages: [] }
 
 describe('i-am-rich duplicate burn', () => {
   it('invokes the underlying adapter twice while forwarding only the original stream', async () => {
-    const events: Appended[] = []
-    const ctx = contextWith([{ session: fakeSession(events) }])
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
+    const ctx = contextWith()
+    apply(ctx, { enabled: true, discardedCopies: 1 }, internals())
 
     // The adapter is the terminal continuation: counting its invocations is the
     // only assertion that proves a second real provider call was made.
@@ -127,53 +108,54 @@ describe('i-am-rich duplicate burn', () => {
 
     const chunks: StreamChunk[] = []
     for await (const chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, adapter)) chunks.push(chunk)
-    await vi.waitFor(() => { expect(events).toHaveLength(1) })
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(1) })
 
     expect(adapterCalls).toBe(2)
     expect(chunks).toEqual(scripted(USAGE))
   })
 
-  it('records the duplicate usage as waste without changing the caller stream', async () => {
-    const events: Appended[] = []
-    const ctx = contextWith([{ session: fakeSession(events) }])
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
+  it('records the duplicate usage in the ledger without changing the caller stream', async () => {
+    const ctx = contextWith()
+    apply(ctx, { enabled: true, discardedCopies: 1 }, internals())
 
     const chunks: StreamChunk[] = []
     for await (const chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => (async function * () {
       yield * scripted(USAGE)
     })())) chunks.push(chunk)
-    await vi.waitFor(() => { expect(events).toHaveLength(1) })
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(1) })
 
     expect(chunks).toHaveLength(5)
-    expect(events[0]?.type).toBe(WASTE_RECORD_TYPE)
-    expect(events[0]?.data).toMatchObject({
+    const lines = await ledgerLines()
+    expect(lines[0]).toMatchObject({
       provider: 'test',
       model: 'test-model',
       outcome: 'discarded',
+      day: '2026-01-05',
       usage: USAGE,
     })
   })
 
-  it('records one waste event per discarded copy', async () => {
-    const events: Appended[] = []
-    const ctx = contextWith([{ session: fakeSession(events) }])
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] }, { enabled: true, discardedCopies: 2 })
+  it('records one ledger line per discarded copy', async () => {
+    const ctx = contextWith()
+    let counter = 0
+    apply(ctx, { enabled: true, discardedCopies: 2 }, internals({ newId: () => `id-${++counter}` }))
 
     let calls = 0
     for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => {
       calls += 1
       return (async function * () { yield * scripted(USAGE) })()
     })) { /* drain */ }
-    await vi.waitFor(() => { expect(events).toHaveLength(2) })
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(2) })
 
     expect(calls).toBe(3)
-    expect(events.map(event => event.type)).toEqual([WASTE_RECORD_TYPE, WASTE_RECORD_TYPE])
+    const lines = await ledgerLines()
+    // Each discard carries its own identity: two lines, two ids.
+    expect(new Set(lines.map(line => line.wasteId)).size).toBe(2)
   })
 
   it('records a failed duplicate that threw before reporting usage', async () => {
-    const events: Appended[] = []
-    const ctx = contextWith([{ session: fakeSession(events) }])
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
+    const ctx = contextWith()
+    apply(ctx, { enabled: true, discardedCopies: 1 }, internals())
 
     let call = 0
     const adapter = () => {
@@ -187,17 +169,17 @@ describe('i-am-rich duplicate burn', () => {
     }
 
     for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, adapter)) { /* drain */ }
-    await vi.waitFor(() => { expect(events).toHaveLength(1) })
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(1) })
 
     // A duplicate that died without reporting usage claims no token amount.
-    expect(events[0]?.data).toMatchObject({ outcome: 'failed' })
-    expect(events[0]?.data).not.toHaveProperty('usage')
+    const lines = await ledgerLines()
+    expect(lines[0]).toMatchObject({ outcome: 'failed' })
+    expect(lines[0]).not.toHaveProperty('usage')
   })
 
   it('keeps a partial usage report from a duplicate that failed mid-stream', async () => {
-    const events: Appended[] = []
-    const ctx = contextWith([{ session: fakeSession(events) }])
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
+    const ctx = contextWith()
+    apply(ctx, { enabled: true, discardedCopies: 1 }, internals())
 
     let call = 0
     const adapter = () => {
@@ -210,133 +192,56 @@ describe('i-am-rich duplicate burn', () => {
     }
 
     for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, adapter)) { /* drain */ }
-    await vi.waitFor(() => { expect(events).toHaveLength(1) })
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(1) })
 
     // Whatever the provider billed before the failure is still real spend.
-    expect(events[0]?.data).toMatchObject({ outcome: 'failed', usage: USAGE })
-  })
-
-  it('records nothing when no single session owns the request', async () => {
-    const events: Appended[] = []
-    const ctx = contextWith([])
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
-
-    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => (async function * () {
-      yield * scripted(USAGE)
-    })())) { /* drain */ }
-    await new Promise(resolve => setTimeout(resolve, 10))
-
-    expect(events).toHaveLength(0)
-  })
-
-  it('attributes by initiator when several agents are live', async () => {
-    // The regression this covers: a multi-agent deployment (teammates,
-    // subagents, a resumed sibling) used to make `list()` length 2+, which
-    // silently discarded the record of spend that really happened.
-    const events: Appended[] = []
-    const owner = { session: fakeSession(events) }
-    const ctx = contextWith([{ session: fakeSession([]) }, owner], owner)
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
-
-    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => (async function * () {
-      yield * scripted(USAGE)
-    })())) { /* drain */ }
-    await vi.waitFor(() => { expect(events).toHaveLength(1) })
-
-    expect(events[0]?.type).toBe(WASTE_RECORD_TYPE)
-    expect(events[0]?.data).toMatchObject({ usage: USAGE })
-  })
-
-  it('resolves the owner at request time, not when the duplicate drains', async () => {
-    // The duplicate outlives the request. Ownership must be read synchronously
-    // while the request is in flight, or a sibling agent appearing later makes
-    // the owner ambiguous after the money was already spent.
-    const events: Appended[] = []
-    const owner = { session: fakeSession(events) }
-    let live: unknown[] = [owner]
-    const ctx = new Context()
-    ctx.reflect.provide('agents', { list: () => live, currentInitiator: () => undefined })
-    ctx.reflect.provide('sessionProjections', { register: () => () => {} })
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
-
-    const adapter = () => (async function * () {
-      yield { type: 'usage', usage: USAGE } satisfies StreamChunk
-      // A second agent registers while the duplicate is still draining.
-      live = [owner, { session: fakeSession([]) }]
-      yield { type: 'finish', reason: { kind: 'stop' } } satisfies StreamChunk
-    })()
-
-    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, adapter)) { /* drain */ }
-    await vi.waitFor(() => { expect(events).toHaveLength(1) })
-
-    expect(events[0]?.data).toMatchObject({ usage: USAGE })
+    const lines = await ledgerLines()
+    expect(lines[0]).toMatchObject({ outcome: 'failed', usage: USAGE })
   })
 
   it('does not intercept when disabled', async () => {
-    const ctx = contextWith([{ session: fakeSession([]) }])
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] }, { enabled: false, discardedCopies: 1 })
+    const ctx = contextWith()
+    apply(ctx, { enabled: false, discardedCopies: 1 }, internals())
     const seen = vi.fn(() => (async function * () { yield * scripted(USAGE) })())
 
     for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, seen)) { /* drain */ }
-
-    expect(seen).toHaveBeenCalledTimes(1)
-  })
-
-  it('mints a distinct discard identity per record', async () => {
-    const events: Appended[] = []
-    const ctx = contextWith([{ session: fakeSession(events) }])
-    let counter = 0
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] }, { enabled: true, discardedCopies: 2 }, { newId: () => `id-${++counter}` })
-
-    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => (async function * () {
-      yield * scripted(USAGE)
-    })())) { /* drain */ }
-    await vi.waitFor(() => { expect(events).toHaveLength(2) })
-
-    const ids = events.map(event => (event.data as LlmWasteEventData).wasteId)
-    expect(new Set(ids).size).toBe(2)
-  })
-
-  it('still burns without recording when the harness has no plugin-record API', async () => {
-    // The regression this covers: on a harness that cannot write an ignorable
-    // record, the old code called `Session.append('llm/waste', …)`. That wrote
-    // an unknown, unmarked event type, and the persistence read path then
-    // refused the *entire* session log:
-    //
-    //   session "…" contains event type "llm/waste" (seq …) unknown to this
-    //   harness and not marked ignorable; refusing to interpret the log
-    //
-    // Losing one statistic is recoverable; losing the session is not. The burn
-    // continues, and nothing at all is written.
-    withholdPluginRecords()
-    const events: Appended[] = []
-    const ctx = contextWith([{ session: fakeSession(events) }])
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] })
-
-    let adapterCalls = 0
-    for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => {
-      adapterCalls += 1
-      return (async function * () { yield * scripted(USAGE) })()
-    })) { /* drain */ }
     await new Promise(resolve => setTimeout(resolve, 10))
 
-    // The duplicate was still sent (real spend), but the log stayed clean.
-    expect(adapterCalls).toBe(2)
-    expect(events).toHaveLength(0)
+    expect(seen).toHaveBeenCalledTimes(1)
+    await expect(readdir(root)).resolves.toEqual([])
   })
 
-  it('warns once per load when the harness cannot record plugin records', async () => {
-    withholdPluginRecords()
-    const ctx = contextWith([{ session: fakeSession([]) }])
+  it('warns and keeps the original stream when a ledger write fails', async () => {
+    // The regression this covers: a broken ledger must never surface as a
+    // broken chat. Losing one statistic is recoverable; losing the turn is not.
+    const ctx = contextWith()
     const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
-    await ctx.plugin({ apply, inject: ['agents', 'sessionProjections'] }, { enabled: true, discardedCopies: 2 })
+    ledger.failure = new Error('disk full')
+    apply(ctx, { enabled: true, discardedCopies: 1 }, internals())
+
+    const chunks: StreamChunk[] = []
+    for await (const chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => (async function * () {
+      yield * scripted(USAGE)
+    })())) chunks.push(chunk)
+
+    expect(chunks).toEqual(scripted(USAGE))
+    await vi.waitFor(() => {
+      expect(warn.mock.calls.some(([message]) => typeof message === 'string' && message.includes('failed to record'))).toBe(true)
+    })
+  })
+
+  it('never touches the harness session log', async () => {
+    // The ledger is standalone: nothing the plugin does may reach a Session,
+    // so no session double is even installed — reaching for one would fail.
+    const ctx = contextWith()
+    apply(ctx, { enabled: true, discardedCopies: 1 }, internals())
 
     for await (const _chunk of ctx.waterfall(ctx, 'llm/stream', OPTIONS, () => (async function * () {
       yield * scripted(USAGE)
     })())) { /* drain */ }
-    await vi.waitFor(() => { expect(warn).toHaveBeenCalled() })
+    await vi.waitFor(async () => { await expect(ledgerLines()).resolves.toHaveLength(1) })
 
-    const notices = warn.mock.calls.filter(([message]) => typeof message === 'string' && message.includes('appendPluginRecord'))
-    expect(notices).toHaveLength(1)
+    const lines = await ledgerLines()
+    expect(lines[0]).toMatchObject({ usage: USAGE })
   })
 })

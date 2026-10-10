@@ -47,6 +47,8 @@
 
 两份都是**真实的、被计费的 provider 请求**。这不是模拟，也不是估算——第二份请求通过网络发出，provider 为它计费，然后它的内容被丢弃。
 
+浪费的用量记在**插件自己的账本目录**（`~/.dsh/i-am-rich/`，每月一个 JSONL 文件），**不写入 dsh 的会话日志**——「行为是段子，账本是账本」，但账本不该混进别人的日志里。格式与位置见下文「数据存储」。
+
 ## 安装
 
 > 这个包目前是 `private: true`，**尚未发布到 npm**。从源码安装：
@@ -167,37 +169,40 @@ dsh plugin --profile <你的 profile> add link:/path/to/dsh-i-am-rich
 
 状态条挂在 `sidebar.footer.action`（`kind: list`，由 `ui-sidebar` 声明），位于侧边栏底部、**用户名（账号按钮）正上方**。侧边栏在同一列里先渲染 `footerActions`、再渲染 `settingsArea`，而账号按钮（头像 + 用户名）正是 `settingsArea` 里的 `sidebar.settings`；所以这一格在版面上就落在用户名上面。**槽位名是硬约束**：`slots.inject` 只会对「已被声明的槽位」执行回调，注册到一个没有任何 bundle 声明的槽位既不报错也不渲染——这正是本插件曾经「装了但看不见」的真正原因。
 
-这个槽位是**根作用域**的，shell 不会传 `sessionId`。状态条因此自己从 store 里挑出当前会话：`retainedBy.mainView > 0`。这是 shell 自己的判定方式——`ui-layout` 选文档标题用的就是同一条件——所以这里复用它，而不是另立一套「当前会话」的定义。
+数据不经过会话 store：状态条挂载时立刻 fetch 一次账本，之后**每 15 秒轮询**一次，标签页重新可见时也会补一次。轮询失败时状态条**保留最后一次成功的数据**并在 tooltip 里注明「账本暂不可用」，绝不静默清零——冻结的数字必须让人看出来是冻结的。
 
-## 请求归属
+## 数据存储
 
-`plugin:i-am-rich/waste` 记录必须挂到**发出这次请求的那个 session** 上。归属按两级判定：
+浪费账本存放在**独立目录**，不写入 dsh 的会话日志：
 
-1. **继承的 initiator**（`ctx.agents.currentInitiator()`）——发起这次调用的 agent 的驱动链。这是精确的，也是**多 agent 部署下唯一正确的来源**：有队友 session、子 agent、或并发的会话时，`agents.list()` 会返回不止一个。
-2. **唯一的活跃 agent**——在 initiator 边界之外、且恰好只有一个 agent 时使用。
+```
+$DSH_HOME/i-am-rich/waste-YYYY-MM.jsonl      # DSH_HOME 缺省为 ~/.dsh
+```
 
-两个关键点，都有回归测试锁定：
-
-- **归属在「请求发出时」同步解析**，而不是等重复请求排空之后再解析。重复请求的生命周期比原请求长；如果期间有兄弟 agent 注册进来，事后解析就会变成「有歧义」，于是一笔**真实花掉的钱**被静默丢弃。
-- **多 agent 不再是「有歧义」。** 旧版本在 `agents.list().length !== 1` 时直接不记录，这让多 agent 部署下**每一次都记不上账**。
-
-只有在既没有 initiator、活跃 agent 又不是恰好一个时才真正放弃记录——此时 burn 照做，但不冒充归属。
+- 每月一个**仅追加**的 JSONL 文件，一行一次丢弃请求：
+  ```json
+  {"v":1,"wasteId":"…","provider":"deepseek","model":"…","outcome":"discarded","day":"2026-10-10","usage":{"inputTokens":100,"outputTokens":20}}
+  ```
+  `v` 是行格式版本；参与折叠的只有 `day` 和 `usage`，`wasteId`/`provider`/`model`/`outcome` 是给人读的事实字段。
+- Host 通过 `GET /api/i-am-rich/waste` 把按天折叠好的账本发布给浏览器（带 1 秒读缓存，多个轮询标签页共享一次磁盘读）。
+- 崩溃最多留下**末尾半行**；读取时跳过解析失败的行，一个月里的一个坏行不会吞掉其余的账。
+- 追加是单行 `O_APPEND` 写，本地文件系统上实际原子；**账本按单实例设计**，不做跨进程加锁。
+- **旧会话日志里的历史 waste 记录不再读取**：账本迁移到独立目录后，旧记录不迁移、不合并，数字从此从新文件开始。
 
 ## 已知代价
 
 诚实地说清楚这个插件的代价：
 
 1. **账单是真的两倍。** 这是插件的全部意义，不是 bug。
-2. **它和 harness 的 `model-visible ⟺ logged` 约定存在张力。** 重复请求产生了真实的 provider 计费，但它在 session log 里没有对应的 `assistant/attempt`，因为结果是扔掉的。本插件用一条 **non-surface** 的 `plugin:i-am-rich/waste` 记录把这件事**如实记下来**，而不是假装没发生。因此「模型可见的输入」这一侧仍然完全可重建；被额外记录的是**支出**，不是模型上下文。
+2. **重复请求不在会话日志里。** 浪费账本记在独立目录（见下文「数据存储」），会话日志完全干净——代价是「某个会话当时浪费了多少」无法按会话回溯，账本只有全局视角。
 3. **延迟与速率压力更高。** 重复请求和原请求并发发出，会占用额外的并发额度。
 
 ## 版本要求
 
-记账依赖 harness 的 `appendPluginRecord`（它会给记录打上 `ignorable: true`，这是写入「本 harness 不认识的事件类型」的**唯一合法途径**）。该 API 出现在 `dsh-v0.2.1-alpha.2`；在更早的 harness（例如 desktop app 当前使用的 `0.2.0-rc.2`）上，插件会**照常发重复请求，但不写任何记录**，并告警一次：
+记账不再依赖任何 harness 的会话记录 API，只要求宿主提供：
 
-> i-am-rich: this harness has no appendPluginRecord, so discarded requests are not recorded
-
-状态条因此会一直是 `0`。这是**刻意的降级**：旧实现用裸 `Session.append` 写未标记的 `llm/waste`，结果是 harness 拒绝解释**整份会话日志**，会话直接打不开。丢一个统计数字可以恢复，丢一整个会话不行。升级 harness 后无需改配置，记账会自动恢复。
+- 可写的用户目录（`DSH_HOME` 或 `~/.dsh`，不存在时自动创建）；
+- Web UI 的 `connection` 服务（注册 `/api` 路由）。headless 环境没有它时，插件**照常发重复请求、照常写账本文件**，只是状态条没有数据可拉，并告警一次。
 
 ## 为什么状态条只显示一份
 
@@ -218,17 +223,17 @@ pnpm test
 ## 文件结构
 
 ```
-src/index.ts               Host 插件：挂 llm/stream，发重复请求，记录 plugin:i-am-rich/waste
+src/index.ts               Host 插件：挂 llm/stream，发重复请求，追加账本文件，注册 /api 路由
 src/waste.ts               纯函数：把丢弃用量折叠成每天的总数与三个口径，并把数值缩放到亿/万
-src/projection.ts          wasteLedger 投影：把每天的账本发布给 Web 客户端
-src/types.ts               记录类型定义（non-surface）与 plugin: / 旧 llm/waste 两个名字
-src/records.ts             唯一写入口：探测 appendPluginRecord，旧 harness 上宁可不记账
+src/ledger-file.ts         独立账本文件：按月 JSONL 的唯一读写口（DSH_HOME/i-am-rich）
+src/ledger-server.ts       /api/i-am-rich/waste 路由：按天账本 + 1 秒读缓存
+src/types.ts               账本行类型定义（non-surface）与行格式版本
 src/brand.ts               WasteId 名义化包装
 src/client/index.ts        浏览器半边入口：注册 sidebar.footer.action 槽位与字典
-src/client/StatusBar.tsx   状态条组件（无状态视图 + 悬停展开包装）
+src/client/StatusBar.tsx   状态条组件（无状态视图 + 悬停展开与轮询包装）
 src/client/locales.ts      zh（真值源）/ en 字典
 src/client/contracts.ts    刻意收窄的浏览器内核类型面
-tests/                     5 个 spec，共 78 个用例
+tests/                     5 个 spec
 cordis.patch.yml           插入插件行的 profile patch
 tsdown.config.ts           双产物构建：lib/index.js（ESM，Node）+ lib/client.js（CJS，浏览器）
 ```

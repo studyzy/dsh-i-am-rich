@@ -1,12 +1,17 @@
 /**
  * Rich-person plugin: sends every model request twice and throws the second
- * copy away, then burns the discarded copy's provider usage into a durable
- * plugin record that the Web status bar reports as today's waste.
+ * copy away, then burns the discarded copy's provider usage into a standalone
+ * ledger file that the Web status bar reports as today's waste.
  *
  * The duplicate is dispatched through the same `llm/stream` waterfall
  * continuation as the original, so it is a real, fully billed provider call.
  * Its chunks are never forwarded to the caller: only the original stream
  * reaches the agent loop, so the duplicate cannot alter the turn.
+ *
+ * The ledger lives outside the harness session log, in monthly append-only
+ * JSONL files under the DSH home (see `ledger-file.ts`), and reaches the
+ * browser through one exact GET route on the shared `/api` channel (see
+ * `ledger-server.ts`). The session log is never touched.
  *
  * @module @deepseek-ai/dsh-i-am-rich
  */
@@ -14,26 +19,24 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-// Value-free import: brings the `ctx.agents` Context augmentation into scope.
-import type {} from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm/types'
-import type {} from '@deepseek-ai/dsh-session-projection'
+// Value-free import: brings the `ctx.on('llm/stream')` Events augmentation into scope.
+import type {} from '@deepseek-ai/dsh-agent'
 import { WasteId } from './brand.ts'
-import { createWasteLedgerProjection } from './projection.ts'
-import { appendWasteRecord, canAppendWasteRecord } from './records.ts'
+import { appendLedgerEntry, closeLedgerHandles, ledgerRoot } from './ledger-file.ts'
+import { registerWasteLedgerRoute } from './ledger-server.ts'
 import { localDay } from './waste.ts'
 import type { LlmWasteEventData, WasteOutcome } from './types.ts'
 
 export type { LlmWasteEventData, WasteOutcome } from './types.ts'
-export { LEGACY_WASTE_RECORD_TYPE, WASTE_RECORD_TYPE } from './types.ts'
-export { appendWasteRecord, canAppendWasteRecord, resetWasteRecordCapability, type WasteRecordSink } from './records.ts'
+export { LEDGER_LINE_VERSION } from './types.ts'
+export { appendLedgerEntry, closeLedgerHandles, ledgerMonthPath, ledgerRoot, readLedgerDays } from './ledger-file.ts'
+export { createWasteLedgerRoute, registerWasteLedgerRoute, WASTE_LEDGER_PATH, type WasteLedgerConnection, type WasteLedgerFetchRoute } from './ledger-server.ts'
 // `WasteId` is one name carrying both a type and a constructor.
 export { WasteId } from './brand.ts'
 export { addWaste, EMPTY_TOTALS, localDay, localMonth, sumPeriods, toMagnitude, totalTokens, type Magnitude, type MagnitudeUnit, type WastePeriods, type WasteTotals } from './waste.ts'
-export { createWasteLedgerProjection, type WasteLedgerState, type WasteLedgerView } from './projection.ts'
 
 export const name = 'i-am-rich'
-export const inject = ['agents', 'sessionProjections']
 
 /** Deployment-varying choices for the duplicate-request burn. */
 export interface Config {
@@ -63,6 +66,8 @@ export interface IAmRichInternals {
   readonly newId?: () => string
   /** Read the current local day stamp for a new discard record. */
   readonly now?: () => Date
+  /** Write the ledger under this directory instead of the DSH home; tests use it. */
+  readonly root?: string
 }
 
 /** Extract the last usage sample a duplicate stream reported for itself. */
@@ -108,15 +113,14 @@ async function burn(stream: AsyncIterable<StreamChunk>): Promise<{ outcome: Wast
  * Install duplicate-request burning on the `llm/stream` waterfall.
  *
  * Each intercepted call delegates once for the real request and once per
- * discarded copy, whose chunks are thrown away. Every discard is recorded as a
- * durable plugin record so the amount burned survives reload and replay.
+ * discarded copy, whose chunks are thrown away. Every discard is appended to
+ * the standalone ledger as one JSONL line so the amount burned survives
+ * reload, and the ledger is served to the Web status bar through a GET route.
  *
- * The record is written only through {@link appendWasteRecord}, which stamps
- * the `ignorable` marker the persistence read path requires of an event type
- * outside `SessionEventMap`. On a harness too old to expose that API the
- * discard is performed but left unrecorded, with one warning per session:
- * writing an unmarked unknown type would make the whole session log
- * unreadable, which is far worse than a missing statistic.
+ * The ledger is written only through {@link appendLedgerEntry}; a write
+ * failure is warned about and never reaches the original request. The route
+ * is registered even while burning is disabled, so the status bar stays live
+ * and keeps reporting the ledger recorded so far.
  * @param ctx - plugin context owning the waterfall listener.
  * @param config - resolved burn configuration.
  * @param internals - non-serializable deterministic hooks for tests.
@@ -124,77 +128,38 @@ async function burn(stream: AsyncIterable<StreamChunk>): Promise<{ outcome: Wast
 export function apply(ctx: Context, config: Config = { enabled: true, discardedCopies: 1 }, internals: IAmRichInternals = {}): void {
   const newId = internals.newId ?? (() => randomUUID())
   const now = internals.now ?? (() => new Date())
+  const root = internals.root ?? ledgerRoot()
 
-  // Registered before the burn so a discard appended during startup already has
-  // its projection unit, and the status bar reads a folded value immediately.
-  ctx.sessionProjections.register(createWasteLedgerProjection())
+  // File handles opened for appends must not outlive the plugin; a later
+  // reload would otherwise write through stale descriptors.
+  ctx.effect(() => closeLedgerHandles, 'i-am-rich: ledger file handles')
+  registerWasteLedgerRoute(ctx, root)
 
   if (!config.enabled) return
 
-  // Probed once, at apply time, so the unsupported-harness warning is emitted
-  // at most once per plugin load instead of once per discarded request.
-  let warnedUnsupported = false
-  void canAppendWasteRecord().then((supported) => {
-    if (supported) return
-    warnedUnsupported = true
-    ctx.logger.warn(
-      'i-am-rich: this harness has no appendPluginRecord, so discarded requests are not recorded '
-      + '(requires dsh >= 0.2.1-alpha.2). Burning continues; the waste status bar will stay at zero.',
-    )
-  })
-
   ctx.on('llm/stream', (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>) => {
     const original = next()
-    // Resolved synchronously, at request time: the session that owns this
-    // request is the one live when the request is issued. Resolving it later,
-    // after the duplicate drains, races the agent registry — a sibling agent
-    // or subagent created during the request would make the owner ambiguous
-    // and silently discard the record of spend that really happened.
-    const owner = activeSession(ctx)
     for (let copy = 0; copy < config.discardedCopies; copy += 1) {
       // Started before iteration so every copy is in flight alongside the
-      // original, exactly as several billed requests would be.
-      void burn(next()).then((result) => {
-        if (owner === undefined) return
-        if (warnedUnsupported) return
-        const data: LlmWasteEventData = {
-          wasteId: WasteId(newId()),
-          provider: options.provider,
-          model: options.model,
-          outcome: result.outcome,
-          day: localDay(now()),
-          ...result.usage === undefined ? {} : { usage: result.usage },
-        }
-        return appendWasteRecord(owner.session, data)
-      }, (error: unknown) => {
-        ctx.logger.warn('i-am-rich: failed to record a discarded duplicate request: %o', error)
-      })
+      // original, exactly as several billed requests would be. The `.catch`
+      // (not a `.then`'s second argument) is load-bearing: only it sees a
+      // rejection raised by the append itself, not just one from the burn.
+      void burn(next())
+        .then((result) => {
+          const data: LlmWasteEventData = {
+            wasteId: WasteId(newId()),
+            provider: options.provider,
+            model: options.model,
+            outcome: result.outcome,
+            day: localDay(now()),
+            ...result.usage === undefined ? {} : { usage: result.usage },
+          }
+          return appendLedgerEntry(root, data)
+        })
+        .catch((error: unknown) => {
+          ctx.logger.warn('i-am-rich: failed to record a discarded duplicate request: %o', error)
+        })
     }
     return original
   })
-}
-
-/**
- * The session that owns a model request.
- *
- * Two sources, in order of authority:
- *
- * 1. The inherited initiator — the agent whose driver chain issued this call.
- *    This is exact, and it is also the only source that survives several live
- *    agents (a teammate session, a subagent, a concurrently-resumed session).
- * 2. The sole live agent, for a call made outside an initiator boundary where
- *    exactly one agent exists.
- *
- * With no initiator *and* an ambiguous registry the burn is still performed but
- * left unrecorded, rather than charged to a session that may not have issued
- * it. That case is genuinely ambiguous; a multi-agent deployment is not.
- * @param ctx - plugin context exposing the agent registry.
- * @returns the owning agent, or undefined when attribution is truly ambiguous.
- */
-function activeSession(ctx: Context): { session: unknown } | undefined {
-  const initiator = ctx.agents.currentInitiator()
-  if (initiator !== undefined) return initiator
-  const agents = ctx.agents.list()
-  if (agents.length !== 1) return undefined
-  return agents[0]
 }

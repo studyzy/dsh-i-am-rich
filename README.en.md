@@ -49,6 +49,8 @@ one model request
 
 Both copies are **real, billed provider requests**. Nothing is simulated or estimated: the second request goes over the network, the provider bills for it, and its content is dropped.
 
+The discarded usage is recorded in **the plugin's own ledger directory** (`~/.dsh/i-am-rich/`, one JSONL file per month) and **never written into the dsh session log** — "the behavior is a joke, the ledger is a ledger", but the ledger does not belong inside someone else's log. Format and location are described under "Data storage" below.
+
 ## Install
 
 > This package is currently `private: true` and is **not published to npm**. Install it from source:
@@ -113,7 +115,7 @@ The status bar shows three figures side by side:
 | This month | The whole current local calendar month. |
 | All time | Every recorded day combined. |
 
-**Why the client computes them:** a projection's `view(state)` receives only state and **cannot see a clock**. "Today" and "this month" depend on the date at read time, so the Host publishes the **per-day ledger** and the client, which owns the clock, selects the ranges. The direct benefit is that the durable fold stays clock-free and therefore strictly replay-reproducible, while the periods stay calendar-correct.
+**Why the client computes them:** the served ledger carries days and **cannot see a clock**. "Today" and "this month" depend on the date at read time, so the Host publishes the **per-day ledger** and the client, which owns the clock, selects the ranges. The direct benefit is that the fold stays clock-free and therefore strictly reproducible, while the periods stay calendar-correct.
 
 The boundaries are covered by tests: a month rollover (`2025-12-31` is not part of this month), a year rollover (the same month and day last year is not "today"), and a malformed day key — which contributes only to the all-time figure and can never inflate a period it does not belong to.
 
@@ -170,29 +172,40 @@ This is deliberate. The bar is the plugin's **only** visible evidence that it is
 
 The bar registers into `sidebar.footer.action` (`kind: list`, declared by `ui-sidebar`), the row at the sidebar foot, **directly above the user name** (the account button). The sidebar renders `footerActions` and then `settingsArea` in one column, and the account button — avatar plus user name — is the `sidebar.settings` entry inside `settingsArea`, so this cell lands on top of the user name by construction. **The slot name is load-bearing**: `slots.inject` only ever runs its callback for a slot some bundle actually declares, so registering into an undeclared slot neither throws nor renders — which is precisely why this plugin once looked "installed but invisible".
 
-That seat is **root-scoped**, so the shell hands it no `sessionId`; the bar picks the current session out of the store itself, by `retainedBy.mainView > 0`. That is the shell's own test for "the main view is showing this session" — `ui-layout` selects the document title by exactly the same condition — so the bar reuses it rather than inventing a second definition of "current session".
+Data does not travel through the session store: the bar fetches the ledger once on mount, then **polls every 15 seconds**, and polls again when the tab becomes visible again. When a poll fails the bar **keeps the last successful figures** and notes "ledger unavailable" in the tooltip — it never silently resets to zero, because frozen numbers must be recognizable as frozen.
 
-## Request attribution
+## Data storage
 
-Every `plugin:i-am-rich/waste` record must be attached to **the session that issued the request**. Attribution has two tiers:
+The waste ledger lives in a **standalone directory** and is never written into the dsh session log:
 
-1. **The inherited initiator** (`ctx.agents.currentInitiator()`) — the driver chain of the agent that made this call. This is exact, and it is the **only correct source under a multi-agent deployment**: with teammate sessions, subagents, or concurrently-resumed sessions, `agents.list()` returns more than one entry.
-2. **The sole live agent** — used outside an initiator boundary, when exactly one agent exists.
+```
+$DSH_HOME/i-am-rich/waste-YYYY-MM.jsonl      # DSH_HOME defaults to ~/.dsh
+```
 
-Two points, both locked down by regression tests:
-
-- **Attribution is resolved synchronously when the request is issued**, not after the duplicate drains. A duplicate outlives the original request, and if a sibling agent registers in the meantime, resolving afterwards turns the owner into "ambiguous" — silently discarding a record of money that was **really spent**.
-- **Several agents are no longer "ambiguous".** An older version recorded nothing at all when `agents.list().length !== 1`, which meant **every request went unrecorded** under a multi-agent deployment.
-
-Only when there is neither an initiator nor exactly one live agent is the record genuinely abandoned — the burn still happens, but it refuses to claim an attribution it cannot justify.
+- One **append-only** JSONL file per month, one line per discarded request:
+  ```json
+  {"v":1,"wasteId":"…","provider":"deepseek","model":"…","outcome":"discarded","day":"2026-10-10","usage":{"inputTokens":100,"outputTokens":20}}
+  ```
+  `v` is the line-format version; only `day` and `usage` take part in the fold — `wasteId`/`provider`/`model`/`outcome` are human-readable facts.
+- The Host publishes the folded per-day ledger to the browser at `GET /api/i-am-rich/waste` (with a 1-second read cache, so several polling tabs share one disk read).
+- A crash can leave at most a **trailing partial line**; the reader skips lines that fail validation, so one bad line never swallows the rest of a month's accounting.
+- Appends are single-line `O_APPEND` writes, atomic in practice on local file systems; **the ledger is designed for a single instance** and takes no cross-process lock.
+- **Historical waste records in old session logs are no longer read**: once the ledger moved to its own directory, old records are neither migrated nor merged; the figures start fresh from the new files.
 
 ## Known costs
 
 Stated plainly:
 
 1. **The bill really is double.** That is the entire point of the plugin, not a defect.
-2. **It is in tension with the harness's `model-visible ⟺ logged` convention.** The duplicate produces real provider billing but has no corresponding `assistant/attempt` in the session log, because its result was dropped. This plugin records that fact durably as a **non-surface** `plugin:i-am-rich/waste` record instead of pretending it did not happen. Model-visible input therefore remains fully reconstructable; what the extra event records is **spending**, not model context.
+2. **Duplicates are not in the session log.** The ledger lives in its own directory (see "Data storage" above) and the session log stays completely clean — the trade-off is that "what a given session wasted at the time" cannot be traced per session; the ledger has only a global view.
 3. **Higher latency and rate-limit pressure.** Duplicates are dispatched concurrently with the original request, consuming additional concurrency.
+
+## Version requirements
+
+Recording no longer depends on any harness session-logging API. The host must provide:
+
+- a writable user directory (`DSH_HOME` or `~/.dsh`, created automatically when absent);
+- the Web UI's `connection` service (which carries the `/api` route). In a headless environment without it, the plugin **still sends duplicates and still writes ledger files**; only the status bar has nothing to poll, and the condition is warned about once.
 
 ## Why the bar shows only one copy's worth
 
@@ -213,17 +226,17 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full development setup and conv
 ## Layout
 
 ```
-src/index.ts               Host plugin: hooks llm/stream, sends duplicates, records plugin:i-am-rich/waste
+src/index.ts               Host plugin: hooks llm/stream, sends duplicates, appends the ledger, registers the /api route
 src/waste.ts               Pure folds: discarded usage into per-day totals and periods, scaled to a readable magnitude
-src/projection.ts          wasteLedger projection: publishes the daily ledger to the Web client
-src/types.ts               Record types (non-surface) plus the plugin: / legacy llm/waste names
-src/records.ts             The single write path: probes appendPluginRecord, records nothing on an old harness
+src/ledger-file.ts         The standalone ledger files: the only read/write path for the monthly JSONL (DSH_HOME/i-am-rich)
+src/ledger-server.ts       The /api/i-am-rich/waste route: the day-keyed ledger with a 1-second read cache
+src/types.ts               Ledger line types (non-surface) and the line-format version
 src/brand.ts               WasteId branding for a discard identity
 src/client/index.ts        Browser half entry: registers the sidebar.footer.action slot and dictionaries
-src/client/StatusBar.tsx   The status bar (stateless view + hover wrapper)
+src/client/StatusBar.tsx   The status bar (stateless view + hover and polling wrapper)
 src/client/locales.ts      zh (source of truth) / en dictionaries
 src/client/contracts.ts    Deliberately narrow surface for the browser kernel
-tests/                     Five specs; 78 cases
+tests/                     Five specs
 cordis.patch.yml           Profile patch that inserts the plugin row
 tsdown.config.ts           Dual build: lib/index.js (ESM, Node) + lib/client.js (CJS, browser)
 ```

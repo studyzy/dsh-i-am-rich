@@ -34,6 +34,7 @@ export const zh = {
   'waste.calls': '{calls} 次调用（已计费）',
   'waste.unpriced': '另有 {calls} 次调用未报告用量',
   'waste.none': '还没浪费 Token',
+  'waste.stale': '账本暂不可用，显示的是最后一次数据',
 } as const
 
 /** English dictionary, key-identical to the Chinese source of truth. */
@@ -56,6 +57,7 @@ export const en: Record<IAmRichKey, string> = {
   'waste.calls': '{calls} billed calls',
   'waste.unpriced': '{calls} more calls reported no usage',
   'waste.none': 'No tokens wasted yet',
+  'waste.stale': 'Ledger unavailable, showing the last known figures',
 }
 
 /** Key domain of the `iAmRich` namespace (zh is the source of truth). */

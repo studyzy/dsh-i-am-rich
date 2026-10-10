@@ -1,16 +1,17 @@
 /**
  * The waste status bar: it renders today, this month, and all-time figures from
- * the Host ledger, stays silent for a session with no ledger, and never invents
- * a number for a day whose discards the provider did not price.
+ * the polled Host ledger, stays live across poll states, and never invents a
+ * number for a day whose discards the provider did not price.
  *
  * The bar computes periods against the real clock, so these cases seed day keys
- * relative to the current date rather than hardcoding a calendar.
+ * relative to the current date rather than hardcoding a calendar. The ledger is
+ * passed straight to the stateless view: polling lives in the stateful wrapper.
  */
 
 import { describe, expect, it } from 'vitest'
 import { WasteStatusBarView } from '../src/client/StatusBar.tsx'
 import { en, zh, COIN } from '../src/client/locales.ts'
-import type { SessionLike, WasteLedgerView, WasteTotals } from '../src/client/contracts.ts'
+import type { LedgerStatus, WasteLedgerView, WasteTotals } from '../src/client/contracts.ts'
 
 /** Build a day bucket with the given token count. */
 function bucket(inputTokens: number, pricedCalls = 1, unpricedCalls = 0): WasteTotals {
@@ -58,60 +59,44 @@ function ledger(): WasteLedgerView {
 }
 
 /**
- * Render the bar with a stubbed session store.
+ * Render the bar with an explicit ledger.
  *
  * The default translator interpolates `{name}` params the way the real `t` seat
  * does, so assertions can read finished copy rather than templates.
  *
- * The seat is `sidebar.footer.action`, a root-scope slot: the shell passes no
- * `sessionId`, so the session is selected from the store by `retainedBy.mainView`
- * — the same idiom `ui-layout` uses for the document title. The stub therefore
- * marks the session as retained unless a case is specifically about selection.
- *
  * Rendered through the stateless view with an explicit `expanded`, so the resting
  * and hovered rows are both reachable as plain function calls. The exported
- * `WasteStatusBar` only adds the hover state around this. `expanded` defaults to
- * true so the figure and copy cases can read all three periods; the layout cases
- * pass it explicitly to cover both states.
- * @param session - the active session the selector sees.
+ * `WasteStatusBar` only adds the hover state and the poll around this.
+ * `expanded` defaults to true so the figure and copy cases can read all three
+ * periods; the layout cases pass it explicitly to cover both states.
+ * @param view - the ledger the last poll delivered, when any.
  * @param t - translator to use for copy.
  * @param wide - whether the sidebar is in its wide column.
  * @param expanded - whether the row is hovered open.
+ * @param status - how the latest poll ended.
  * @returns the rendered React element tree.
  */
 function render(
-  session: SessionLike | undefined,
+  view: WasteLedgerView | undefined,
   t?: (key: keyof typeof en, params?: Record<string, unknown>) => string,
   wide = true,
   expanded = true,
+  status: LedgerStatus = view === undefined ? 'loading' : 'ok',
 ) {
   const translate = t ?? ((key: keyof typeof en, params?: Record<string, unknown>) => {
     const template = en[key]
     if (params === undefined) return template
     return template.replace(/\{(\w+)\}/g, (_match, name: string) => String(params[name] ?? ''))
   })
-  const useSessions = (<T,>(selector: (state: { byId: Record<string, SessionLike | undefined> }) => T): T =>
-    selector({ byId: { s1: withMainView(session) } })) as never
   return WasteStatusBarView({
-    useSessions,
     wide,
     expanded,
     onEnter: () => {},
     onLeave: () => {},
     t: translate as never,
+    ledger: view,
+    status,
   }) as React.ReactElement | null
-}
-
-/**
- * Mark a session as retained by the main view.
- *
- * The bar selects its session by that counter, so a fixture without it would
- * read as "no active session" and silently show zeroes.
- * @param session - the session fixture.
- * @returns the session with the main-view retention set.
- */
-function withMainView(session: SessionLike | undefined): SessionLike | undefined {
-  return session === undefined ? undefined : { ...session, retainedBy: { mainView: 1 } }
 }
 
 /** Flatten a React element tree to its text content. */
@@ -223,7 +208,7 @@ function coinsOf(element: React.ReactElement | null): React.ReactElement[] {
 
 describe('waste status bar', () => {
   it('renders today, this month, and all-time figures', () => {
-    const element = render({ projectionValues: { wasteLedger: ledger() } })
+    const element = render(ledger())
 
     expect(periodText(element, 'today')).toBe('Wasted today100')
     expect(periodText(element, 'month')).toBe('Wasted this month300')
@@ -236,7 +221,7 @@ describe('waste status bar', () => {
       if (params === undefined) return template
       return template.replace(/\{(\w+)\}/g, (_match, name: string) => String(params[name] ?? ''))
     }
-    const element = render({ projectionValues: { wasteLedger: ledger() } }, translate as never)
+    const element = render(ledger(), translate as never)
 
     expect(periodText(element, 'today')).toBe('今日浪费100')
     expect(periodText(element, 'month')).toBe('本月浪费300')
@@ -247,38 +232,49 @@ describe('waste status bar', () => {
     // Everything recorded is older than 40 days, so this month is empty while
     // the all-time figure still counts it.
     const stale: WasteLedgerView = { days: { [dayKey(daysFromToday(-40))]: bucket(400) } }
-    const element = render({ projectionValues: { wasteLedger: stale } })
+    const element = render(stale)
 
     expect(periodText(element, 'today')).toBe('Wasted today0')
     expect(periodText(element, 'month')).toBe('Wasted this month0')
     expect(periodText(element, 'total')).toBe('Wasted all time400')
   })
 
-  it('shows three zeros when the session publishes no ledger', () => {
+  it('shows three zeros before the first poll has answered', () => {
     // The bar is the only visible sign the plugin is mounted, and a dock entry
     // that renders nothing is indistinguishable from one that failed to load,
-    // so absence must still render.
-    for (const session of [{}, undefined]) {
-      const element = render(session)
+    // so the loading state must still render.
+    const element = render(undefined)
 
-      expect(element?.props['data-i-am-rich-waste']).toBe('empty')
-      expect(periodText(element, 'today')).toBe('Wasted today0')
-      expect(periodText(element, 'month')).toBe('Wasted this month0')
-      expect(periodText(element, 'total')).toBe('Wasted all time0')
-    }
+    expect(element?.props['data-i-am-rich-waste']).toBe('empty')
+    expect(element?.props['data-i-am-rich-status']).toBe('loading')
+    expect(periodText(element, 'today')).toBe('Wasted today0')
+    expect(periodText(element, 'total')).toBe('Wasted all time0')
   })
 
-  it('shows three zeros for a malformed projection value', () => {
-    for (const bad of [{ days: 'nope' }, 7]) {
-      const element = render({ projectionValues: { wasteLedger: bad } })
+  it('marks the poll state on the rendered bar', () => {
+    expect(render(ledger(), undefined, true, true, 'ok')?.props['data-i-am-rich-status']).toBe('ok')
+    expect(render(undefined, undefined, true, true, 'error')?.props['data-i-am-rich-status']).toBe('error')
+  })
 
-      expect(element?.props['data-i-am-rich-waste']).toBe('empty')
-      expect(periodText(element, 'total')).toBe('Wasted all time0')
-    }
+  it('notes staleness in the tooltip when the latest poll failed', () => {
+    // A failed poll freezes the figures; freezing silently would pass off old
+    // numbers as current. The last good ledger stays on the bar.
+    const element = render(ledger(), undefined, true, true, 'error')
+
+    expect(element?.props['data-i-am-rich-status']).toBe('error')
+    expect(element?.props.title).toContain('Ledger unavailable')
+    expect(element?.props.title).toContain('Wasted all time 700')
+    expect(periodText(element, 'total')).toBe('Wasted all time700')
+  })
+
+  it('keeps the plain tooltip when the poll succeeded', () => {
+    const element = render(ledger())
+
+    expect(element?.props.title).not.toContain('Ledger unavailable')
   })
 
   it('reports an empty ledger as zeros with an explanatory tooltip', () => {
-    const element = render({ projectionValues: { wasteLedger: { days: {} } } })
+    const element = render({ days: {} })
 
     expect(element?.props['data-i-am-rich-waste']).toBe('empty')
     expect(element?.props.title).toBe('No tokens wasted yet')
@@ -289,7 +285,7 @@ describe('waste status bar', () => {
     const withUnpriced: WasteLedgerView = {
       days: { [dayKey(daysFromToday(0))]: bucket(600, 2, 4) },
     }
-    const element = render({ projectionValues: { wasteLedger: withUnpriced } })
+    const element = render(withUnpriced)
 
     expect(periodText(element, 'total')).toBe('Wasted all time600')
     expect(element?.props.title).toContain('2 billed calls')
@@ -300,69 +296,10 @@ describe('waste status bar', () => {
     const unpricedOnly: WasteLedgerView = {
       days: { [dayKey(daysFromToday(0))]: bucket(0, 0, 3) },
     }
-    const element = render({ projectionValues: { wasteLedger: unpricedOnly } })
+    const element = render(unpricedOnly)
 
     // Tokens are zero, but unpriced calls exist, so the bar is not "empty".
     expect(element?.props.title).toContain('3 more calls reported no usage')
-    expect(periodText(element, 'total')).toBe('Wasted all time0')
-  })
-})
-
-describe('session selection without a sessionId seat', () => {
-  /**
-   * Render over a raw store, bypassing the helper's main-view marking.
-   *
-   * The bar is a root-scope sidebar contribution, so it must find the active
-   * session itself rather than being handed one.
-   * @param byId - the store's session map.
-   * @returns the rendered React element tree.
-   */
-  function renderStore(byId: Record<string, SessionLike | undefined>) {
-    const useSessions = (<T,>(selector: (state: { byId: Record<string, SessionLike | undefined> }) => T): T =>
-      selector({ byId })) as never
-    return WasteStatusBarView({
-      useSessions,
-      wide: true,
-      expanded: true,
-      onEnter: () => {},
-      onLeave: () => {},
-      t: ((key: keyof typeof en) => en[key]) as never,
-    }) as React.ReactElement | null
-  }
-
-  /** A session carrying a ledger, optionally retained by the main view. */
-  function session(tokens: number, mainView: number): SessionLike {
-    return {
-      retainedBy: { mainView },
-      projectionValues: { wasteLedger: { days: { [dayKey(daysFromToday(0))]: bucket(tokens) } } },
-    }
-  }
-
-  it('reads the ledger of the session the main view retains', () => {
-    const element = renderStore({ a: session(100, 0), b: session(700, 1) })
-
-    expect(periodText(element, 'total')).toBe('Wasted all time700')
-  })
-
-  it('ignores a retained-but-zero session in favour of the shown one', () => {
-    // `mainView > 0` is the shell's own test for "the main view shows this";
-    // a counter of 0 means some other surface retains it.
-    const element = renderStore({ background: session(500, 0), shown: session(300, 1) })
-
-    expect(periodText(element, 'total')).toBe('Wasted all time300')
-  })
-
-  it('folds to zeroes when no session is retained by the main view', () => {
-    const element = renderStore({ a: session(100, 0) })
-
-    expect(element?.props['data-i-am-rich-waste']).toBe('empty')
-    expect(periodText(element, 'total')).toBe('Wasted all time0')
-  })
-
-  it('folds to zeroes for a session whose retainedBy is missing', () => {
-    const element = renderStore({ a: { projectionValues: { wasteLedger: { days: {} } } } })
-
-    expect(element?.props['data-i-am-rich-waste']).toBe('empty')
     expect(periodText(element, 'total')).toBe('Wasted all time0')
   })
 })
@@ -379,8 +316,8 @@ describe('sidebar rail', () => {
   const ledger: WasteLedgerView = { days: { [dayKey(daysFromToday(0))]: bucket(22_488_345) } }
 
   it('marks whether it rendered in the wide column', () => {
-    const wide = render({ projectionValues: { wasteLedger: ledger } }, undefined, true)
-    const rail = render({ projectionValues: { wasteLedger: ledger } }, undefined, false)
+    const wide = render(ledger, undefined, true)
+    const rail = render(ledger, undefined, false)
 
     expect(wide?.props['data-i-am-rich-wide']).toBe('true')
     expect(rail?.props['data-i-am-rich-wide']).toBe('false')
@@ -389,7 +326,7 @@ describe('sidebar rail', () => {
   it('shows today alone at rest, on one row with one coin', () => {
     // Resting state is a single period, so it never has to fit ~330px into a
     // 264–420px sidebar.
-    const element = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, true, false)
+    const element = render(ledger, zhT as never, true, false)
 
     expect(element?.props['data-i-am-rich-expanded']).toBe('false')
     expect(periodText(element, 'today')).toBe('今日浪费2249万')
@@ -406,7 +343,7 @@ describe('sidebar rail', () => {
   it('expands into three stacked rows, each with its own coin', () => {
     // The requested shape: three lines, not three columns, and a coin leading
     // every line rather than one coin for the whole panel.
-    const element = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, true, true)
+    const element = render(ledger, zhT as never, true, true)
 
     expect(element?.props['data-i-am-rich-expanded']).toBe('true')
     expect(periodText(element, 'today')).toBe('今日浪费2249万')
@@ -435,10 +372,7 @@ describe('sidebar rail', () => {
     // fires them would stay stuck in one of the two states.
     let entered = 0
     let left = 0
-    const useSessions = (<T,>(selector: (state: { byId: Record<string, SessionLike | undefined> }) => T): T =>
-      selector({ byId: {} })) as never
     const view = WasteStatusBarView({
-      useSessions,
       wide: true,
       expanded: false,
       onEnter: () => { entered += 1 },
@@ -459,7 +393,7 @@ describe('sidebar rail', () => {
     // expanded as well, because the rail has no room for three lines either
     // way — the width limit bites before the hover state does.
     for (const expanded of [false, true]) {
-      const rail = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, false, expanded)
+      const rail = render(ledger, zhT as never, false, expanded)
 
       expect(periodText(rail, 'today')).toBe('2249万')
 
@@ -468,7 +402,7 @@ describe('sidebar rail', () => {
       expect(rows[0]?.props['data-i-am-rich-period']).toBe('today')
     }
 
-    const rail = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, false)
+    const rail = render(ledger, zhT as never, false)
     expect(rail?.props.title).toContain('今日浪费')
     expect(rail?.props.title).toContain('本月浪费')
     expect(rail?.props.title).toContain('累计浪费')
@@ -479,7 +413,7 @@ describe('sidebar rail', () => {
     // would let a row break internally, which is not what "three rows" means.
     for (const wide of [true, false]) {
       for (const expanded of [true, false]) {
-        const element = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, wide, expanded)
+        const element = render(ledger, zhT as never, wide, expanded)
         const style = element?.props.style as Record<string, unknown>
 
         expect(style.flexWrap).toBe('nowrap')
@@ -493,8 +427,8 @@ describe('sidebar rail', () => {
     // Stacking is what makes the detail fit: one period per line needs only the
     // width of the longest single row, so the panel stays inside the sidebar
     // column rather than having to be sized to its content and overflow.
-    const resting = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, true, false)
-    const expanded = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, true, true)
+    const resting = render(ledger, zhT as never, true, false)
+    const expanded = render(ledger, zhT as never, true, true)
     const restingStyle = resting?.props.style as Record<string, unknown>
     const expandedStyle = expanded?.props.style as Record<string, unknown>
 
@@ -506,7 +440,7 @@ describe('sidebar rail', () => {
   })
 
   it('keeps the 浪费 labels in the wide column', () => {
-    const wide = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, true, true)
+    const wide = render(ledger, zhT as never, true, true)
 
     expect(periodText(wide, 'today')).toBe('今日浪费2249万')
     expect(periodText(wide, 'total')).toBe('累计浪费2249万')
@@ -515,21 +449,21 @@ describe('sidebar rail', () => {
   it('keeps the 浪费 label on the resting row too', () => {
     // Only the number of periods changes between states — the label must not be
     // dropped, or the resting row would read as spend rather than waste.
-    const resting = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, true, false)
+    const resting = render(ledger, zhT as never, true, false)
 
     expect(periodText(resting, 'today')).toBe('今日浪费2249万')
   })
 
   it('renders the coin in both widths', () => {
     for (const wide of [true, false]) {
-      const element = render({ projectionValues: { wasteLedger: ledger } }, undefined, wide)
+      const element = render(ledger, undefined, wide)
 
       expect(textOf(findByProp(element, 'data-i-am-rich-coin') as React.ReactElement)).toBe(COIN)
     }
   })
 
   it('keeps each figure atomic so the row does not break mid-figure', () => {
-    const element = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, true, true)
+    const element = render(ledger, zhT as never, true, true)
 
     for (const cell of childrenOf(element)) {
       const cellStyle = cell.props.style as Record<string, unknown> | undefined
@@ -541,7 +475,7 @@ describe('sidebar rail', () => {
     // The rail always renders one row — hovering cannot widen 56px — so both
     // states center, and the expanded rail panel centers its single row too.
     for (const expanded of [false, true]) {
-      const rail = render({ projectionValues: { wasteLedger: ledger } }, zhT as never, false, expanded)
+      const rail = render(ledger, zhT as never, false, expanded)
       const style = rail?.props.style as Record<string, unknown>
 
       expect(style.justifyContent).toBe('center')
@@ -565,7 +499,7 @@ describe('magnitude display', () => {
   }
 
   it('leads with a coin', () => {
-    const element = render({ projectionValues: { wasteLedger: spend(100) } })
+    const element = render(spend(100))
     const coin = findByProp(element, 'data-i-am-rich-coin')
 
     expect(coin).toBeDefined()
@@ -576,7 +510,7 @@ describe('magnitude display', () => {
 
   it('scales a six-figure count to 万 in Chinese', () => {
     // 22,488,345 is the real ledger total; it is not yet 亿, so it reads as 万.
-    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } }, zhT as never)
+    const element = render(spend(22_488_345), zhT as never)
 
     expect(periodText(element, 'today')).toBe('今日浪费2249万')
     expect(periodText(element, 'month')).toBe('本月浪费2249万')
@@ -586,7 +520,7 @@ describe('magnitude display', () => {
   it('spells out 浪费 in every Chinese label, not just the period', () => {
     // The bar must say what happened, not merely when: a bare "今日 2249万"
     // reads as a spend figure, which is the opposite of what this plugin counts.
-    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } }, zhT as never)
+    const element = render(spend(22_488_345), zhT as never)
 
     for (const period of ['today', 'month', 'total']) {
       expect(periodText(element, period)).toContain('浪费')
@@ -594,7 +528,7 @@ describe('magnitude display', () => {
   })
 
   it('names the waste in every English label too', () => {
-    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } })
+    const element = render(spend(22_488_345))
 
     for (const period of ['today', 'month', 'total']) {
       expect(periodText(element, period)).toContain('Wasted')
@@ -602,14 +536,14 @@ describe('magnitude display', () => {
   })
 
   it('scales a nine-figure count to 亿 in Chinese', () => {
-    const element = render({ projectionValues: { wasteLedger: spend(250_000_000) } }, zhT as never)
+    const element = render(spend(250_000_000), zhT as never)
 
     expect(periodText(element, 'today')).toBe('今日浪费2.5亿')
     expect(periodText(element, 'total')).toBe('累计浪费2.5亿')
   })
 
   it('uses K/M/B under the English dictionary rather than 万/亿', () => {
-    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } })
+    const element = render(spend(22_488_345))
 
     expect(periodText(element, 'today')).toBe('Wasted today22.49M')
     expect(periodText(element, 'total')).toBe('Wasted all time22.49M')
@@ -618,14 +552,14 @@ describe('magnitude display', () => {
   it('never renders a bare 0亿 for a figure that is plainly millions', () => {
     // The whole point of picking the largest applicable unit: 22.5M must not be
     // written as "0亿".
-    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } }, zhT as never)
+    const element = render(spend(22_488_345), zhT as never)
 
     expect(periodText(element, 'total')).not.toContain('0亿')
     expect(periodText(element, 'total')).toBe('累计浪费2249万')
   })
 
   it('keeps the exact integer in the tooltip while the bar is scaled', () => {
-    const element = render({ projectionValues: { wasteLedger: spend(22_488_345) } }, zhT as never)
+    const element = render(spend(22_488_345), zhT as never)
 
     // Display is scaled; the tooltip is the record.
     expect(periodText(element, 'total')).toBe('累计浪费2249万')
@@ -633,8 +567,8 @@ describe('magnitude display', () => {
   })
 
   it('marks which scale family the bar rendered in', () => {
-    const cn = render({ projectionValues: { wasteLedger: spend(100) } }, zhT as never)
-    const us = render({ projectionValues: { wasteLedger: spend(100) } })
+    const cn = render(spend(100), zhT as never)
+    const us = render(spend(100))
 
     expect(cn?.props['data-i-am-rich-scale']).toBe('zh')
     expect(us?.props['data-i-am-rich-scale']).toBe('en')
